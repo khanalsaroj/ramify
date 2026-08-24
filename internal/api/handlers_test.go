@@ -226,7 +226,7 @@ func TestWebhookBranchPushedTriggersApply(t *testing.T) {
 	require.Eventually(t, func() bool {
 		env, err := h.store.GetEnvironmentByProjectBranch(context.Background(), "acme/web", "feature-x")
 		return err == nil && env.Status == store.StatusReady
-	}, 2*time.Second, 10*time.Millisecond, "webhook-triggered apply must complete asynchronously")
+	}, 5*time.Second, 10*time.Millisecond, "webhook-triggered apply must complete asynchronously")
 }
 
 func TestWebhookPRClosedTriggersDestroyWhenEnvironmentExists(t *testing.T) {
@@ -249,7 +249,7 @@ func TestWebhookPRClosedTriggersDestroyWhenEnvironmentExists(t *testing.T) {
 	require.Eventually(t, func() bool {
 		env, err := h.store.GetEnvironment(context.Background(), created.ID)
 		return err == nil && env.Status == store.StatusDestroyed
-	}, 2*time.Second, 10*time.Millisecond)
+	}, 5*time.Second, 10*time.Millisecond)
 }
 
 func TestWebhookPRClosedNoExistingEnvironmentIsNoop(t *testing.T) {

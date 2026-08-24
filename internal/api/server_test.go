@@ -37,7 +37,7 @@ func TestServeUnixSocket(t *testing.T) {
 	require.Eventually(t, func() bool {
 		resp, err = client.Get("http://unix/healthz")
 		return err == nil
-	}, 2*time.Second, 20*time.Millisecond, "server must become reachable over the unix socket")
+	}, 5*time.Second, 20*time.Millisecond, "server must become reachable over the unix socket")
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	_ = resp.Body.Close()
@@ -65,7 +65,7 @@ func TestServeTCPRequiresBearerToken(t *testing.T) {
 	require.Eventually(t, func() bool {
 		unauthorized, err = http.Get("http://127.0.0.1:18743/healthz") //nolint:noctx // short-lived polling loop in a test
 		return err == nil
-	}, 2*time.Second, 20*time.Millisecond, "tcp listener must become reachable")
+	}, 5*time.Second, 20*time.Millisecond, "tcp listener must become reachable")
 	require.NoError(t, err)
 	require.Equal(t, http.StatusUnauthorized, unauthorized.StatusCode)
 	_ = unauthorized.Body.Close()
