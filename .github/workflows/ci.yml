@@ -8,64 +8,99 @@ on:
 permissions:
   contents: read
 
-jobs:
-  lint:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: "1.23"
-          cache: true
-      - uses: golangci/golangci-lint-action@v6
-        with:
-          version: latest
-          args: --build-tags=e2e
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
+jobs:
   test:
+    name: Test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "stable"
+          cache: true
+
+      - name: Check formatting
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-ed:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet -tags=e2e ./...
+
+      - name: Test with race detector
+        if: matrix.os != 'windows-latest'
+        run: go test -race -coverprofile=coverage.out ./...
+
+      - name: Test
+        if: matrix.os == 'windows-latest'
+        run: go test ./...
+
+      - name: Upload coverage
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage
+          path: coverage.out
+          retention-days: 14
+
+  lint:
+    name: Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
-          go-version: "1.23"
+          go-version: "stable"
           cache: true
-      - run: go test -race -cover ./...
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.13.1
+          args: --build-tags=e2e
+          only-new-issues: true
 
   build:
+    name: Cross-compile
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include:
-          - goos: linux
-            goarch: amd64
-          - goos: linux
-            goarch: arm64
-          - goos: darwin
-            goarch: arm64
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
-          go-version: "1.23"
+          go-version: "stable"
           cache: true
-      - name: Build ramifyd
+      - name: Build ramify + ramifyd for every release target
+        shell: bash
         env:
           CGO_ENABLED: "0"
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-        run: go build -o /dev/null ./cmd/ramifyd
-      - name: Build ramify
-        env:
-          CGO_ENABLED: "0"
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-        run: go build -o /dev/null ./cmd/ramify
+        run: |
+          targets="linux/amd64 linux/arm64 linux/386 darwin/amd64 darwin/arm64 freebsd/amd64 freebsd/arm64 windows/amd64 windows/arm64 windows/386"
+          for t in $targets; do
+            os="${t%/*}"; arch="${t#*/}"
+            echo "==> $os/$arch"
+            GOOS="$os" GOARCH="$arch" go build -o /dev/null ./cmd/ramify
+            GOOS="$os" GOARCH="$arch" go build -o /dev/null ./cmd/ramifyd
+          done
 
   e2e:
+    name: e2e harness
     runs-on: ubuntu-latest
+    needs: [test, lint]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Run e2e harness
         run: |
           docker compose -f test/e2e/docker-compose.dev.yml up \

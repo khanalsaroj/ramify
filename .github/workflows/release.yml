@@ -1,0 +1,172 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
+      - ".gitignore"
+      - ".golangci.yml"
+      - "ramify.example.yaml"
+      - ".github/workflows/ci.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "stable"
+          cache: true
+
+      # Guard the release behind a green build + test run.
+      - name: Build and test
+        run: |
+          go build ./...
+          go vet ./...
+          go test ./...
+
+      # Decide the bump from the latest commit (Conventional Commits).
+      - name: Determine version bump
+        id: bump
+        run: |
+          msg="$(git log -1 --pretty=%B | tr '[:upper:]' '[:lower:]')"
+          echo "Last commit: $msg"
+          if echo "$msg" | grep -qE '(^|\s)breaking change|!:'; then
+            echo "bump=major" >> "$GITHUB_OUTPUT"
+          elif echo "$msg" | grep -qE '^feat'; then
+            echo "bump=minor" >> "$GITHUB_OUTPUT"
+          else
+            echo "bump=patch" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Calculate next version
+        id: version
+        env:
+          BUMP: ${{ steps.bump.outputs.bump }}
+        run: |
+          latest="$(git describe --tags --abbrev=0 2>/dev/null || echo v0.0.0)"
+          ver="${latest#v}"
+          IFS='.' read -r major minor patch <<< "$ver"
+          case "$BUMP" in
+            major) next="v$((major + 1)).0.0" ;;
+            minor) next="v${major}.$((minor + 1)).0" ;;
+            patch) next="v${major}.${minor}.$((patch + 1))" ;;
+          esac
+          echo "version=$next" >> "$GITHUB_OUTPUT"
+          echo "Next version: $next"
+
+      # Release targets cover a Linux VPS (amd64/arm64, where ramifyd
+      # actually runs) and an operator's own machine to run the ramify CLI
+      # from (linux/darwin/windows, amd64/arm64) — not every GOOS/GOARCH Go
+      # supports, since ramifyd's control-plane role is server-side by design.
+      - name: Build & package
+        id: build
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          # -X targets main.version specifically — both cmd/ramify and
+          # cmd/ramifyd declare exactly that package-level var and nothing
+          # else, so this is the only symbol worth overriding here.
+          LDFLAGS="-s -w -X main.version=${VERSION}"
+
+          build() {
+            local os="$1" arch="$2" target="${1}-${2}"
+            echo "==> building $target"
+            local workdir
+            workdir="$(mktemp -d)"
+            local ramify_bin=ramify ramifyd_bin=ramifyd
+            if [ "$os" = "windows" ]; then
+              ramify_bin=ramify.exe; ramifyd_bin=ramifyd.exe
+            fi
+            GOOS="$os" GOARCH="$arch" CGO_ENABLED=0 \
+              go build -trimpath -ldflags "$LDFLAGS" -o "$workdir/$ramify_bin" ./cmd/ramify
+            GOOS="$os" GOARCH="$arch" CGO_ENABLED=0 \
+              go build -trimpath -ldflags "$LDFLAGS" -o "$workdir/$ramifyd_bin" ./cmd/ramifyd
+            if [ "$os" = "windows" ]; then
+              (cd "$workdir" && zip -q "$OLDPWD/dist/ramify-${target}.zip" "$ramify_bin" "$ramifyd_bin")
+            else
+              (cd "$workdir" && tar -czf "$OLDPWD/dist/ramify-${target}.tar.gz" "$ramify_bin" "$ramifyd_bin")
+            fi
+            rm -rf "$workdir"
+          }
+
+          build linux   amd64
+          build linux   arm64
+          build darwin  amd64
+          build darwin  arm64
+          build windows amd64
+
+          (cd dist && sha256sum * > checksums.txt)
+          echo "Artifacts:"
+          ls -lh dist/
+
+      - name: Generate release notes
+        id: notes
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          prev="$(git tag --sort=-version:refname | head -1 || true)"
+          range=""
+          if [ -n "$prev" ]; then
+            range="${prev}..HEAD"
+          fi
+          notes="dist/RELEASE_NOTES.md"
+
+          # Quote the range only when it is set; passing an empty arg to
+          # `git log` would be treated as an (invalid) revision.
+          log_lines() {
+            if [ -n "$range" ]; then
+              git log "$range" --pretty='- %s'
+            else
+              git log --pretty='- %s'
+            fi
+          }
+
+          {
+            echo "## ramify ${VERSION}"
+            echo ""
+
+            # Using `if` (not `[ ... ] && ...`) keeps the function's exit status
+            # at 0 when a section is empty; otherwise `set -e` would abort here.
+            section() {
+              local title="$1" pattern="$2" body
+              body="$(log_lines | grep -iE "$pattern" || true)"
+              if [ -n "$body" ]; then
+                printf '### %s\n%s\n\n' "$title" "$body"
+              fi
+            }
+
+            section "🚨 Breaking Changes" 'breaking change|!:'
+            section "✨ Features" '^- feat'
+            section "🐛 Bug Fixes" '^- fix'
+            section "📚 Documentation" '^- docs'
+
+            other="$(log_lines | grep -ivE 'breaking change|!:|^- feat|^- fix|^- docs' || true)"
+            if [ -n "$other" ]; then
+              printf '### 🔧 Other Changes\n%s\n' "$other"
+            fi
+          } > "$notes"
+
+          cat "$notes"
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: ramify ${{ steps.version.outputs.version }}
+          body_path: dist/RELEASE_NOTES.md
+          files: dist/*
+          fail_on_unmatched_files: true
