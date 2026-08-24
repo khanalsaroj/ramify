@@ -5,3 +5,4 @@
 *.sqlite3
 .env
 ramify.yaml
+.idea
