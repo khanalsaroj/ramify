@@ -60,3 +60,15 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: go build -o /dev/null ./cmd/ramify
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run e2e harness
+        run: |
+          docker compose -f test/e2e/docker-compose.dev.yml up \
+            --build --abort-on-container-exit --exit-code-from test-runner
+      - name: Show service logs on failure
+        if: failure()
+        run: docker compose -f test/e2e/docker-compose.dev.yml logs

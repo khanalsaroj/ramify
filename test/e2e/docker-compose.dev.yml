@@ -1,0 +1,107 @@
+# E2E harness for Ramify's MVP definition of done (build spec §7 item 3 / §8 step 15).
+#
+# Brings up: CoreDNS serving a file-backed zone (standing in for a real DNS
+# provider — see test/e2e/dnsfile and DECISIONS.md for why), Pebble as a local ACME
+# server issuing certificates via DNS-01 against CoreDNS, a fake SSH deploy target
+# exercising the real SSH transport in providers/deploy/compose, a mock GitHub REST
+# API recording PR comments, and a test-runner that drives the full
+# create -> verify -> destroy loop using Ramify's real provider implementations and
+# reconciler.
+#
+# Run with: docker compose -f test/e2e/docker-compose.dev.yml up --abort-on-container-exit
+# then check the test-runner service's exit code / logs for pass/fail.
+
+services:
+  coredns:
+    image: coredns/coredns:1.11.3
+    command: ["-conf", "/Corefile"]
+    volumes:
+      - ./coredns/Corefile:/Corefile:ro
+      - zones-data:/zones
+    networks: [ramify-e2e]
+
+  zones-init:
+    image: busybox:1.36
+    volumes:
+      - zones-data:/zones
+      - ./coredns/zones:/seed:ro
+    entrypoint: ["/bin/sh", "-c", "cp /seed/*.zone /zones/ && echo seeded"]
+    networks: [ramify-e2e]
+
+  pebble:
+    image: letsencrypt/pebble:latest
+    command: ["pebble", "-config", "/test/config/pebble-config.json", "-dnsserver", "coredns:53"]
+    environment:
+      PEBBLE_VA_NOSLEEP: "1"
+    depends_on:
+      coredns:
+        condition: service_started
+      zones-init:
+        condition: service_completed_successfully
+    networks: [ramify-e2e]
+
+  # pebble-certs extracts Pebble's self-signed test root CA (baked into the pebble
+  # image at /test/certs/pebble.minica.pem) onto a shared volume, so test-runner's
+  # ACME client can trust Pebble's HTTPS endpoint without a manual step.
+  pebble-certs:
+    image: letsencrypt/pebble:latest
+    entrypoint: ["/bin/sh", "-c", "cp /test/certs/pebble.minica.pem /shared/pebble.minica.pem && echo extracted"]
+    volumes:
+      - certs-data:/shared
+    networks: [ramify-e2e]
+
+  mockgithub:
+    build:
+      context: ../..
+      dockerfile: test/e2e/images/mockgithub/Dockerfile
+    networks: [ramify-e2e]
+
+  sshd:
+    build:
+      context: images/sshd
+    volumes:
+      - sshd-key:/shared
+    networks: [ramify-e2e]
+
+  test-runner:
+    build:
+      context: ../..
+      dockerfile: test/e2e/images/testrunner/Dockerfile
+    depends_on:
+      coredns:
+        condition: service_started
+      zones-init:
+        condition: service_completed_successfully
+      pebble:
+        condition: service_started
+      pebble-certs:
+        condition: service_completed_successfully
+      mockgithub:
+        condition: service_started
+      sshd:
+        condition: service_started
+    volumes:
+      - zones-data:/zones
+      - certs-data:/shared:ro
+      - sshd-key:/ssh:ro
+    environment:
+      RAMIFY_E2E_ZONE_FILE: /zones/preview.example.com.zone
+      RAMIFY_E2E_ZONE: preview.example.com
+      RAMIFY_E2E_PEBBLE_DIR_URL: https://pebble:14000/dir
+      RAMIFY_E2E_PEBBLE_CA_CERT: /shared/pebble.minica.pem
+      RAMIFY_E2E_GITHUB_BASE_URL: http://mockgithub:8080/
+      RAMIFY_E2E_SSH_ADDR: sshd:22
+      RAMIFY_E2E_SSH_USER: root
+      RAMIFY_E2E_SSH_KEY_PATH: /ssh/id_ed25519
+      RAMIFY_E2E_SSH_READY_PATH: /ssh/ready
+      RAMIFY_E2E_WEBHOOK_SECRET: e2e-test-webhook-secret
+      RAMIFY_E2E_ARTIFACT_REF: busybox:1.36
+    networks: [ramify-e2e]
+
+networks:
+  ramify-e2e: {}
+
+volumes:
+  zones-data: {}
+  certs-data: {}
+  sshd-key: {}

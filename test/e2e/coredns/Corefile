@@ -1,0 +1,5 @@
+preview.example.com:53 {
+    file /zones/preview.example.com.zone
+    log
+    errors
+}
