@@ -134,6 +134,20 @@ func (p *Provider) HealthCheck(ctx context.Context, ref string) (providerapi.Sta
 	return providerapi.Status{Healthy: true, Detail: "running"}, nil
 }
 
+// Logs returns the last 500 lines of combined stdout+stderr for ref's containers.
+// It is not part of providerapi.DeployProvider — log retrieval has no meaningful
+// generic contract across deploy targets — but internal/api checks for it via a
+// local optional-capability interface so `ramify logs` works when Compose is
+// configured.
+func (p *Provider) Logs(ctx context.Context, ref string) (string, error) {
+	cmd := fmt.Sprintf("docker compose -p %s -f %s logs --no-color --tail=500", shellQuote(ref), shellQuote(p.composeFile))
+	out, err := p.runner.Run(ctx, cmd)
+	if err != nil {
+		return "", fmt.Errorf("compose: logs %s: %w", ref, err)
+	}
+	return out, nil
+}
+
 // shellQuote wraps s in single quotes for safe interpolation into a remote shell
 // command, escaping any embedded single quotes.
 func shellQuote(s string) string {

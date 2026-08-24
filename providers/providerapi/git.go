@@ -2,7 +2,23 @@
 
 package providerapi
 
-import "context"
+import (
+	"context"
+	"errors"
+)
+
+// ErrInvalidWebhookSignature is the sentinel error a GitProvider implementation
+// must return (wrapped, so errors.Is still matches) from ParseWebhook when the
+// webhook signature fails verification, so callers such as the control API's HTTP
+// handler can respond 401 without depending on a specific GitProvider
+// implementation's error types.
+var ErrInvalidWebhookSignature = errors.New("providerapi: invalid webhook signature")
+
+// ErrUnhandledWebhookEvent is the sentinel error a GitProvider implementation must
+// return (wrapped) from ParseWebhook when the payload is validly signed and
+// well-formed but has no mapping to an Event (for example, an irrelevant
+// pull_request action). Callers should treat it as a no-op, not a failure.
+var ErrUnhandledWebhookEvent = errors.New("providerapi: unhandled webhook event")
 
 // Event is a normalized change notification produced by a GitProvider from an
 // inbound webhook payload.

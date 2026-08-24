@@ -11,7 +11,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -22,14 +21,15 @@ import (
 )
 
 // ErrInvalidSignature is returned by ParseWebhook when the HMAC-SHA256 signature
-// does not match the payload.
-var ErrInvalidSignature = errors.New("github: invalid webhook signature")
+// does not match the payload. It wraps providerapi.ErrInvalidWebhookSignature.
+var ErrInvalidSignature = fmt.Errorf("github: invalid webhook signature: %w", providerapi.ErrInvalidWebhookSignature)
 
 // ErrUnhandledEvent is returned by ParseWebhook when the payload is a validly
 // signed, well-formed webhook that Ramify has no mapping for (for example, a
 // pull_request "labeled" action, or a push of a tag rather than a branch). Callers
-// should treat this as a no-op, not a failure.
-var ErrUnhandledEvent = errors.New("github: unhandled webhook event")
+// should treat this as a no-op, not a failure. It wraps
+// providerapi.ErrUnhandledWebhookEvent.
+var ErrUnhandledEvent = fmt.Errorf("github: unhandled webhook event: %w", providerapi.ErrUnhandledWebhookEvent)
 
 // Provider implements providerapi.GitProvider against the GitHub REST API.
 type Provider struct {
