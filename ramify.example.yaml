@@ -1,0 +1,69 @@
+# Example ramify.yaml — copy to ramify.yaml and fill in the values for your setup.
+# Fields ending in a secret (tokens, webhook secrets) accept either a literal value
+# or a "$NAME" / "${NAME}" reference resolved from the environment at startup, so
+# the literal secret never has to live in this file. Ramify logs which fields were
+# configured, never their values.
+
+# The DNS zone/suffix preview environments are published under, e.g. a branch
+# "feature-x" is published at "feature-x.preview.example.com".
+base_domain: preview.example.com
+
+server:
+  # Unix socket the control API listens on by default.
+  socket_path: /var/run/ramify/ramify.sock
+  # Optional token-protected TCP listener, for remote CLI access. Leave both empty
+  # to disable and use the unix socket only.
+  tcp_addr: ""
+  tcp_token: ""
+
+store:
+  path: /var/lib/ramify/ramify.db
+
+reaper:
+  # How often the reaper checks for expired environments.
+  interval: 5m
+  # TTL applied to a new environment unless overridden per-environment.
+  default_ttl: 72h
+
+github:
+  # A GitHub personal access token or installation token with repo + pull_request
+  # scope, used to post status comments.
+  token: $RAMIFY_GITHUB_TOKEN
+  # The webhook secret configured on the GitHub repository/organization webhook.
+  webhook_secret: $RAMIFY_GITHUB_WEBHOOK_SECRET
+
+deploy:
+  # The host Ramify SSHes to in order to run `docker compose`.
+  ssh_addr: deploy-host.example.com:22
+  ssh_user: ramify
+  ssh_private_key_path: /etc/ramify/deploy_key
+  # Path to the docker-compose.yml on the deploy host, run with
+  # IMAGE_TAG=<artifact ref> and COMPOSE_PROJECT_NAME=<per-environment name>.
+  compose_file: /srv/ramify/docker-compose.yml
+  # Address DNS records should point to. Usually deploy_host's own address; a
+  # reverse proxy on that host is expected to route by Host header to the right
+  # compose service.
+  dns_target: 203.0.113.10
+
+dns:
+  zone: preview.example.com
+  cloudflare_api_token: $RAMIFY_CLOUDFLARE_API_TOKEN
+
+acme:
+  email: ops@example.com
+  # Let's Encrypt production directory. Use
+  # https://acme-staging-v02.api.letsencrypt.org/directory while testing to avoid
+  # production rate limits.
+  ca_dir_url: https://acme-v02.api.letsencrypt.org/directory
+
+notify:
+  # Optional Go text/template overrides per notification kind
+  # (ready|updated|failed|expiring|destroyed), executed against a
+  # providerapi.NotifyEvent ({{.Kind}}, {{.URL}}, {{.Detail}}). Any kind left out
+  # here uses Ramify's built-in default template.
+  comment_templates: {}
+
+log:
+  # "json" or "text". Leave empty to auto-detect (text on a TTY, json otherwise),
+  # or set the RAMIFY_LOG_FORMAT environment variable.
+  format: ""
