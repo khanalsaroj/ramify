@@ -15,6 +15,14 @@ Early development. See [`docs/quickstart.md`](docs/quickstart.md) to get started
 test suites work, and [`DECISIONS.md`](DECISIONS.md) for judgment calls made during
 the build.
 
+## Documentation site
+
+[`docs/index.html`](docs/index.html) is a self-contained documentation page —
+overview, architecture, install, quickstart, CLI reference, config reference, and
+FAQ — meant to be served with GitHub Pages. To turn it on: **Settings → Pages →
+Build and deployment → Deploy from a branch → Branch: `main`, folder: `/docs`**.
+It'll be published at `https://<owner>.github.io/ramify/`.
+
 ## License
 
 Apache-2.0. See [`LICENSE`](LICENSE).
