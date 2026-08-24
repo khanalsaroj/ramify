@@ -57,6 +57,11 @@ type DeployConfig struct {
 	SSHAddr           string `yaml:"ssh_addr"`
 	SSHUser           string `yaml:"ssh_user"`
 	SSHPrivateKeyPath string `yaml:"ssh_private_key_path"`
+	// SSHKnownHostsPath, if set, verifies the deploy host's key against an
+	// OpenSSH-format known_hosts file. Left empty, the host key is not verified —
+	// acceptable only for a first connection to a host you've provisioned
+	// yourself; ramify doctor warns if this is unset.
+	SSHKnownHostsPath string `yaml:"ssh_known_hosts_path,omitempty"`
 	ComposeFile       string `yaml:"compose_file"`
 	DNSTarget         string `yaml:"dns_target"`
 }
@@ -143,13 +148,14 @@ func Load(path string) (*Config, error) {
 	}
 	cfg.Server.TCPToken = resolved
 
-	if err := cfg.validate(); err != nil {
+	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("config: %s: %w", path, err)
 	}
 	return &cfg, nil
 }
 
-func (c Config) validate() error {
+// Validate reports whether every field Ramify requires at startup is present.
+func (c Config) Validate() error {
 	var missing []string
 	if c.BaseDomain == "" {
 		missing = append(missing, "base_domain")
