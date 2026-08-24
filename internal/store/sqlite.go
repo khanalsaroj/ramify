@@ -161,7 +161,7 @@ func (s *sqliteStore) ListEnvironments(ctx context.Context) ([]Environment, erro
 	if err != nil {
 		return nil, fmt.Errorf("listing environments: %w", err)
 	}
-	defer rows.Close() // read-only cleanup; nothing actionable if it fails
+	defer func() { _ = rows.Close() }() // read-only cleanup; nothing actionable if it fails
 
 	var out []Environment
 	for rows.Next() {
@@ -185,7 +185,7 @@ func (s *sqliteStore) ListExpiredEnvironments(ctx context.Context, now time.Time
 	if err != nil {
 		return nil, fmt.Errorf("listing expired environments: %w", err)
 	}
-	defer rows.Close() // read-only cleanup; nothing actionable if it fails
+	defer func() { _ = rows.Close() }() // read-only cleanup; nothing actionable if it fails
 
 	var out []Environment
 	for rows.Next() {
@@ -230,7 +230,7 @@ func (s *sqliteStore) ListDNSRecords(ctx context.Context, environmentID string) 
 	if err != nil {
 		return nil, fmt.Errorf("listing dns records for environment %s: %w", environmentID, err)
 	}
-	defer rows.Close() // read-only cleanup; nothing actionable if it fails
+	defer func() { _ = rows.Close() }() // read-only cleanup; nothing actionable if it fails
 
 	var out []DNSRecord
 	for rows.Next() {
@@ -283,7 +283,7 @@ func (s *sqliteStore) ListUnprocessedEvents(ctx context.Context) ([]Event, error
 	if err != nil {
 		return nil, fmt.Errorf("listing unprocessed events: %w", err)
 	}
-	defer rows.Close() // read-only cleanup; nothing actionable if it fails
+	defer func() { _ = rows.Close() }() // read-only cleanup; nothing actionable if it fails
 
 	var out []Event
 	for rows.Next() {

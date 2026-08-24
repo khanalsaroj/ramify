@@ -4,7 +4,6 @@ package store
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 
@@ -214,9 +213,4 @@ func TestEventWithoutEnvironment(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, unprocessed, 1)
 	require.Empty(t, unprocessed[0].EnvironmentID)
-}
-
-func TestErrorsAreWrapped(t *testing.T) {
-	var err error = ErrNotFound
-	require.True(t, errors.Is(err, ErrNotFound))
 }
