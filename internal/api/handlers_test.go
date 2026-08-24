@@ -59,7 +59,7 @@ func newTestHarness(t *testing.T) *testHarness {
 	notify := fakes.NewNotifierProvider()
 	git := &stubGitProvider{GitProvider: fakes.NewGitProvider()}
 
-	reconciler := core.NewReconciler(st, deploy, dns, cert, notify, core.NewRealClock(), "preview.example.com", nil)
+	reconciler := core.NewReconciler(st, deploy, dns, cert, notify, core.NewRealClock(), "preview.example.com", 0, nil)
 	server := NewServer(st, reconciler, git, deploy, "preview.example.com", nil)
 
 	return &testHarness{server: server, store: st, deploy: deploy, git: git}

@@ -34,6 +34,11 @@ type Reconciler struct {
 	// "preview.example.com". A subdomain "feature-x" is published as
 	// "feature-x.preview.example.com".
 	baseDomain string
+	// defaultTTL is applied to ttl_expires_at on every successful Apply,
+	// refreshing it — so an environment stays alive as long as it keeps receiving
+	// pushes and expires defaultTTL after the last one. Zero disables TTL
+	// assignment (an environment is then only removed by an explicit Destroy).
+	defaultTTL time.Duration
 
 	logger *slog.Logger
 }
@@ -48,6 +53,7 @@ func NewReconciler(
 	notify providerapi.NotifierProvider,
 	clock Clock,
 	baseDomain string,
+	defaultTTL time.Duration,
 	logger *slog.Logger,
 ) *Reconciler {
 	if logger == nil {
@@ -61,6 +67,7 @@ func NewReconciler(
 		notify:     notify,
 		clock:      clock,
 		baseDomain: baseDomain,
+		defaultTTL: defaultTTL,
 		logger:     logger,
 	}
 }
@@ -202,6 +209,10 @@ func (r *Reconciler) attemptApply(ctx context.Context, env store.Environment, re
 
 	env.DeployRef = deployment.Ref
 	env.Status = store.StatusReady
+	if r.defaultTTL > 0 {
+		expiresAt := r.clock.Now().Add(r.defaultTTL)
+		env.TTLExpiresAt = &expiresAt
+	}
 	env, err = r.store.UpdateEnvironment(ctx, env)
 	if err != nil {
 		return env, fmt.Errorf("marking environment ready: %w", err)

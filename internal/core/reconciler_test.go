@@ -50,7 +50,7 @@ func newHarness(t *testing.T) *harness {
 		notify: fakes.NewNotifierProvider(),
 		clock:  &fakeClock{now: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},
 	}
-	h.rec = NewReconciler(h.store, h.deploy, h.dns, h.cert, h.notify, h.clock, "preview.example.com", nil)
+	h.rec = NewReconciler(h.store, h.deploy, h.dns, h.cert, h.notify, h.clock, "preview.example.com", 0, nil)
 	return h
 }
 
@@ -225,4 +225,21 @@ func TestReplayUnprocessedEventsRecoversCrashedDestroy(t *testing.T) {
 	final, err := h.store.GetEnvironment(ctx, env.ID)
 	require.NoError(t, err)
 	require.Equal(t, store.StatusDestroyed, final.Status)
+}
+
+func TestApplySetsAndRefreshesTTLWhenConfigured(t *testing.T) {
+	h := newHarness(t)
+	rec := NewReconciler(h.store, h.deploy, h.dns, h.cert, h.notify, h.clock, "preview.example.com", 24*time.Hour, nil)
+	ctx := context.Background()
+	req := ApplyRequest{Project: "acme/web", Branch: "feature-x", Subdomain: "feature-x", ArtifactRef: "ref1"}
+
+	env, err := rec.Apply(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, env.TTLExpiresAt)
+	require.True(t, env.TTLExpiresAt.Equal(h.clock.now.Add(24*time.Hour)))
+
+	h.clock.now = h.clock.now.Add(time.Hour)
+	env, err = rec.Apply(ctx, req)
+	require.NoError(t, err)
+	require.True(t, env.TTLExpiresAt.Equal(h.clock.now.Add(24*time.Hour)), "TTL must refresh on every successful apply")
 }
