@@ -5,6 +5,7 @@ go 1.25.6
 require (
 	github.com/google/go-github/v66 v66.0.0
 	github.com/stretchr/testify v1.12.1
+	golang.org/x/crypto v0.55.0
 	modernc.org/sqlite v1.57.0
 )
 
