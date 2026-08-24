@@ -10,8 +10,10 @@ thing only: ephemeral preview environments driven by git activity.
 
 ## Status
 
-Early development. See [`DECISIONS.md`](DECISIONS.md) for judgment calls made during
-the build and [`docs/quickstart.md`](docs/quickstart.md) to get started.
+Early development. See [`docs/quickstart.md`](docs/quickstart.md) to get started,
+[`docs/providers.md`](docs/providers.md) for how the provider architecture and its
+test suites work, and [`DECISIONS.md`](DECISIONS.md) for judgment calls made during
+the build.
 
 ## License
 

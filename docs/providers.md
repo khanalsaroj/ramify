@@ -1,0 +1,136 @@
+# Providers
+
+Ramify's core (`internal/core`, `internal/store`, `internal/api`) never talks to
+Git hosts, deploy targets, DNS APIs, ACME CAs, or notification channels directly —
+it only knows the five interfaces in `providers/providerapi`:
+`GitProvider`, `DeployProvider`, `DNSProvider`, `CertificateProvider`, and
+`NotifierProvider`. Everything under `providers/` is a concrete implementation of
+one or more of those.
+
+| Interface | Built-in implementation |
+|---|---|
+| `GitProvider` | `providers/git/github` |
+| `DeployProvider` | `providers/deploy/compose` (SSH + `docker compose`) |
+| `DNSProvider` | `providers/dns/cloudflare` |
+| `CertificateProvider` | `providers/cert/acme` (Let's Encrypt via DNS-01) |
+| `NotifierProvider` | `providers/notify/githubcomment` |
+
+## The contract test suites
+
+`test/contract` holds one exported `Run*Contract` function per interface —
+`RunDeployProviderContract`, `RunDNSProviderContract`, `RunGitProviderContract` —
+each expressing the minimum behavior *any* implementation of that interface must
+satisfy (built-in or a future third-party one): idempotent create/update, correct
+teardown, and — for `DNSProvider` — that deleting a record you don't own is
+rejected, not silently skipped.
+
+Every built-in provider's own test file (`providers/*/*/*.go`'s `_test.go`
+counterpart) runs the relevant contract suite. In CI, none of them touch a real
+external account or host — per the testing rules in the build spec (§7 item 1, no
+real network/SSH/API calls in unit tests), each wires the *real* provider type
+against a small in-memory test double standing in for the network:
+
+- `providers/dns/cloudflare`: a `fakeCFClient` implementing the same narrow
+  `dnsClient` interface the real `*cloudflare.API` satisfies.
+- `providers/deploy/compose`: a `fakeComposeHost` simulating `docker compose`'s
+  state transitions, standing in for the SSH `commandRunner`.
+- `providers/cert/acme`: not run against a fake CA — `lego.NewClient` dials the
+  ACME directory as part of construction, so there's no clean seam for a fake at
+  the unit level. The DNS-01 challenge adapter and certificate-parsing helper are
+  unit tested directly; the full issue/revoke flow against a real CA (Pebble) is
+  covered by `test/e2e` instead.
+
+## Running the contract suite against a real account
+
+The fakes prove the provider's own logic (idempotency, error wrapping, ownership
+checks) is correct independent of the network. They don't prove the real API calls
+are correct. To check that, point the real provider at a real account:
+
+### Cloudflare
+
+```go
+package main
+
+import (
+    "testing"
+
+    "github.com/khanalsaroj/ramify/providers/dns/cloudflare"
+    "github.com/khanalsaroj/ramify/test/contract"
+)
+
+func TestCloudflareContractLive(t *testing.T) {
+    token := os.Getenv("RAMIFY_TEST_CLOUDFLARE_TOKEN")
+    if token == "" {
+        t.Skip("RAMIFY_TEST_CLOUDFLARE_TOKEN not set")
+    }
+    p, err := cloudflare.New(token)
+    if err != nil {
+        t.Fatal(err)
+    }
+    contract.RunDNSProviderContract(t, p, os.Getenv("RAMIFY_TEST_CLOUDFLARE_ZONE"))
+}
+```
+
+Use a token scoped to a zone you don't mind the suite writing test `A`/`TXT`
+records to and deleting again (it cleans up after itself, but scope the token
+narrowly regardless — see the "no secret value in logs" rule in the build spec §6,
+which this repo's own code follows for the same reason).
+
+### Compose / SSH
+
+```go
+package main
+
+import (
+    "os"
+    "testing"
+
+    "golang.org/x/crypto/ssh"
+
+    "github.com/khanalsaroj/ramify/providers/deploy/compose"
+    "github.com/khanalsaroj/ramify/test/contract"
+)
+
+func TestComposeContractLive(t *testing.T) {
+    keyPath := os.Getenv("RAMIFY_TEST_SSH_KEY")
+    addr := os.Getenv("RAMIFY_TEST_SSH_ADDR")
+    if keyPath == "" || addr == "" {
+        t.Skip("RAMIFY_TEST_SSH_KEY / RAMIFY_TEST_SSH_ADDR not set")
+    }
+    keyBytes, err := os.ReadFile(keyPath)
+    if err != nil {
+        t.Fatal(err)
+    }
+    signer, err := ssh.ParsePrivateKey(keyBytes)
+    if err != nil {
+        t.Fatal(err)
+    }
+    p := compose.New(addr, "ramify", signer, ssh.InsecureIgnoreHostKey(), "/srv/ramify/docker-compose.yml", addr)
+    contract.RunDeployProviderContract(t, p)
+}
+```
+
+Point this at a disposable host (or the same `test/e2e` fake-`docker`-shim sshd
+image, run standalone) — the contract suite really does run `docker compose up`
+and `down` against whatever `compose_file` you configure.
+
+### GitHub
+
+`RunGitProviderContract` needs a set of pre-signed webhook fixtures, not a live
+account (there's no "run a webhook against yourself" flow) — see
+`providers/git/github/github_test.go` for the fixtures it already exercises.
+`CommentOnPR` against a real repository is covered by `test/e2e`'s mock GitHub
+server standing in for the real API; there isn't a separate "real account" contract
+run for it, since posting a comment to a real PR from a test suite would be a
+visible side effect on someone's real repository.
+
+## The e2e harness
+
+`test/e2e` brings up all of the above for real (Pebble for ACME, CoreDNS for DNS,
+a fake SSH deploy target, a mock GitHub API) and drives the full
+create → verify → destroy loop. See `test/e2e/docker-compose.dev.yml` to run it,
+and `DECISIONS.md` for the design decisions behind it — in particular, why it uses
+an e2e-only file-based DNS provider (`test/e2e/dnsfile`) rather than the real
+Cloudflare provider, and why it wires the reconciler and real provider
+implementations directly in a Go test process rather than running the compiled
+`ramifyd` binary.
