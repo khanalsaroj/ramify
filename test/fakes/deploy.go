@@ -34,6 +34,9 @@ type DeployProvider struct {
 
 	// ApplyErr, when set, is returned by every Apply call instead of succeeding.
 	ApplyErr error
+	// applyCalls counts every Apply invocation, including ones that fail, so
+	// tests can assert retry/backoff behavior.
+	applyCalls int
 }
 
 var _ providerapi.DeployProvider = (*DeployProvider)(nil)
@@ -50,6 +53,9 @@ func refFor(spec providerapi.EnvSpec) string {
 
 // Apply implements providerapi.DeployProvider.
 func (f *DeployProvider) Apply(_ context.Context, spec providerapi.EnvSpec) (providerapi.Deployment, error) {
+	f.mu.Lock()
+	f.applyCalls++
+	f.mu.Unlock()
 	if f.ApplyErr != nil {
 		return providerapi.Deployment{}, f.ApplyErr
 	}
@@ -126,7 +132,7 @@ func (f *DeployProvider) HealthCheck(_ context.Context, ref string) (providerapi
 	}
 }
 
-// ApplyCount reports how many times Apply has been called for ref, so tests can
+// ApplyCount reports how many times Apply has succeeded for ref, so tests can
 // assert idempotent behavior (no duplicate resource creation on repeated Apply).
 func (f *DeployProvider) ApplyCount(ref string) int {
 	f.mu.Lock()
@@ -136,4 +142,12 @@ func (f *DeployProvider) ApplyCount(ref string) int {
 		return 0
 	}
 	return d.applyCount
+}
+
+// ApplyCalls reports how many times Apply has been invoked in total, including
+// calls that failed, so tests can assert retry/backoff behavior.
+func (f *DeployProvider) ApplyCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.applyCalls
 }
