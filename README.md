@@ -9,11 +9,12 @@ into short-lived, automatically routed, automatically expiring preview environme
 deployed to infrastructure you already operate.
 
 [![CI](https://github.com/khanalsaroj/ramify/actions/workflows/ci.yml/badge.svg)](https://github.com/khanalsaroj/ramify/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/khanalsaroj/ramify?sort=semver)](https://github.com/khanalsaroj/ramify/releases)
 [![Go Version](https://img.shields.io/badge/go-1.23%2B-00ADD8?logo=go&logoColor=white)](go.mod)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-3F7D52)](LICENSE)
 [![Docs](https://img.shields.io/badge/docs-quickstart-A8551E)](docs/quickstart.md)
 
-[Quickstart](#quickstart) · [Documentation site](#documentation) · [Architecture](#how-it-works) · [CLI](#cli-reference) · [Configuration](#configuration)
+[Install](#installation) · [Quickstart](#quickstart) · [Documentation site](#documentation) · [Architecture](#how-it-works) · [CLI](#cli-reference) · [Configuration](#configuration)
 
 </div>
 
@@ -114,18 +115,60 @@ flowchart LR
     G -- yes --> H["Reaper tears down:<br/>DNS + deploy + cert"]
 ```
 
-## Quickstart
+## Installation
 
-Prerequisites: a GitHub repo, a Cloudflare-managed DNS zone, one VPS you control
-with Docker + Compose, and Go 1.23+ locally to build the binaries (no releases
-published yet).
+Installing gets you both binaries: `ramify` (the CLI) and `ramifyd` (the daemon
+that runs on your VPS).
+
+### Linux / macOS
 
 ```sh
-# 1. Build
+curl -fsSL https://raw.githubusercontent.com/khanalsaroj/ramify/main/scripts/install.sh | bash
+```
+
+Installs to `/usr/local/bin` (using `sudo` if needed) or falls back to
+`~/.local/bin`. Override with `RAMIFY_INSTALL_DIR` or pin a version with
+`RAMIFY_VERSION`.
+
+### Windows (PowerShell)
+
+```powershell
+iwr -useb https://raw.githubusercontent.com/khanalsaroj/ramify/main/scripts/install.ps1 | iex
+```
+
+> Restart your terminal afterwards so the updated `PATH` takes effect.
+
+### Prebuilt binaries
+
+Grab an archive for your platform from the
+[Releases](https://github.com/khanalsaroj/ramify/releases) page (each release
+ships a `checksums.txt`).
+
+### From source
+
+```sh
 git clone https://github.com/khanalsaroj/ramify.git && cd ramify
 go build -o ramify   ./cmd/ramify
 go build -o ramifyd  ./cmd/ramifyd
 sudo mv ramify ramifyd /usr/local/bin/
+```
+
+### Verify
+
+```sh
+ramify --version
+```
+
+## Quickstart
+
+Prerequisites: a GitHub repo, a Cloudflare-managed DNS zone, and one VPS you
+control with Docker + Compose.
+
+```sh
+# 1. Install (see above) — or, from source:
+#    git clone https://github.com/khanalsaroj/ramify.git && cd ramify
+#    go build -o ramify ./cmd/ramify && go build -o ramifyd ./cmd/ramifyd
+#    sudo mv ramify ramifyd /usr/local/bin/
 
 # 2. Set up directories and a deploy key
 ramify install --config-dir /etc/ramify --data-dir /var/lib/ramify

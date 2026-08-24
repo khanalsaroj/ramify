@@ -10,6 +10,7 @@ on:
       - ".gitignore"
       - ".golangci.yml"
       - "ramify.example.yaml"
+      - "scripts/**"
       - ".github/workflows/ci.yml"
 
 permissions:

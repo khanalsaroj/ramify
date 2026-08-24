@@ -14,8 +14,8 @@ precisely so nothing is left assumed.
 - A domain (or subdomain) whose DNS is managed by Cloudflare, e.g. `preview.example.com`.
 - One VPS you control, reachable over SSH, with Docker and the Compose plugin
   installed (`docker compose version` should work on it).
-- Go 1.23+ on your local machine, to build the two Ramify binaries (there are no
-  published releases yet).
+- Either the installer below, or Go 1.23+ locally to build the two Ramify
+  binaries from source.
 
 ## 1. Provision the pieces Ramify doesn't manage
 
@@ -32,7 +32,16 @@ this for you.
 4. **GitHub token**: a personal access token (or GitHub App installation token)
    with permission to comment on pull requests in your repository.
 
-## 2. Build the binaries
+## 2. Install `ramify` and `ramifyd`
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/khanalsaroj/ramify/main/scripts/install.sh | bash
+```
+
+Installs both binaries to `/usr/local/bin` (falls back to `~/.local/bin`).
+Windows: `iwr -useb https://raw.githubusercontent.com/khanalsaroj/ramify/main/scripts/install.ps1 | iex`
+in PowerShell. Pin a version with `RAMIFY_VERSION=v0.3.1` (or `$env:RAMIFY_VERSION`
+on Windows), or build from source instead:
 
 ```sh
 git clone https://github.com/khanalsaroj/ramify.git

@@ -307,10 +307,8 @@ footer a:hover{color:var(--accent);}
           <a class="btn btn-ghost" href="#architecture">See how it works</a>
         </div>
         <div class="hero-install">
-          <p class="cap">Build from source — no releases published yet</p>
-          <pre><code>git clone https://github.com/khanalsaroj/ramify.git &amp;&amp; cd ramify
-go build -o ramify  ./cmd/ramify
-go build -o ramifyd ./cmd/ramifyd</code></pre>
+          <p class="cap">Install both binaries — Linux &amp; macOS</p>
+          <pre><code>curl -fsSL https://raw.githubusercontent.com/khanalsaroj/ramify/main/scripts/install.sh | bash</code></pre>
         </div>
       </div>
 
@@ -432,13 +430,17 @@ go build -o ramifyd ./cmd/ramifyd</code></pre>
         <li>A GitHub repository you can add a webhook to.</li>
         <li>A domain or subdomain managed by <strong style="color:var(--text)">Cloudflare</strong> DNS, e.g. <code>preview.example.com</code>.</li>
         <li>One VPS you control, reachable over SSH, with Docker + the Compose plugin installed.</li>
-        <li>Go 1.23+ locally, to build the two binaries — there are no published releases yet.</li>
       </ul>
 
       <div class="qs-item" style="margin-top:26px;">
-        <h4><span class="num">01</span> Build the binaries</h4>
-        <pre><code>git clone https://github.com/khanalsaroj/ramify.git
-cd ramify
+        <h4><span class="num">01</span> Install <code>ramify</code> and <code>ramifyd</code></h4>
+        <pre><code>curl -fsSL https://raw.githubusercontent.com/khanalsaroj/ramify/main/scripts/install.sh | bash</code></pre>
+        <p>Installs both binaries to <code>/usr/local/bin</code> (falls back to <code>~/.local/bin</code>).
+        Windows: <code>iwr -useb https://raw.githubusercontent.com/khanalsaroj/ramify/main/scripts/install.ps1 | iex</code>
+        in PowerShell. Or grab an archive from
+        <a href="https://github.com/khanalsaroj/ramify/releases" target="_blank" rel="noopener">Releases</a>,
+        or build from source:</p>
+        <pre><code>git clone https://github.com/khanalsaroj/ramify.git &amp;&amp; cd ramify
 go build -o ramify   ./cmd/ramify
 go build -o ramifyd  ./cmd/ramifyd
 sudo mv ramify ramifyd /usr/local/bin/</code></pre>
