@@ -1,0 +1,7 @@
+/bin/
+/dist/
+*.db
+*.sqlite
+*.sqlite3
+.env
+ramify.yaml
