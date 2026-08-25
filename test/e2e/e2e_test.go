@@ -9,7 +9,7 @@
 // ramifyd binary; see DECISIONS.md for why (cmd/ramifyd's DNS provider is fixed to
 // Cloudflare, which this harness has no real account for).
 //
-// Run via: docker compose -f test/e2e/docker-compose.dev.yml up --abort-on-container-exit
+// Run via: docker compose -f test/e2e/docker-compose.dev.yml run --build --rm test-runner
 package e2e
 
 import (
@@ -56,10 +56,19 @@ type env struct {
 	artifactRef   string
 }
 
+// loadEnv reads the harness configuration injected by docker-compose.dev.yml. The
+// e2e build tag alone does not imply the harness is up — `go test -tags=e2e ./...`
+// on a developer machine reaches this test with nothing configured — so an empty
+// environment skips rather than failing with an opaque "must be set".
 func loadEnv(t *testing.T) env {
 	t.Helper()
+	if os.Getenv("RAMIFY_E2E_ZONE_FILE") == "" {
+		t.Skip("e2e harness not configured; run: docker compose -f test/e2e/docker-compose.dev.yml run --build --rm test-runner")
+	}
 	get := func(name string) string {
 		v := os.Getenv(name)
+		// Past this point the harness is partly configured, which is a bug in the
+		// compose file rather than a reason to skip.
 		require.NotEmpty(t, v, "%s must be set (see docker-compose.dev.yml)", name)
 		return v
 	}

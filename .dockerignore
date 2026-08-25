@@ -1,0 +1,41 @@
+# The e2e images use the repo root as their build context (test/e2e/images/*).
+# Keep local state, credentials, and build output out of that context: it is
+# copied wholesale by `COPY . .` and would otherwise land inside the images.
+
+.git/
+.github/
+.idea/
+.vscode/
+
+# Build output
+bin/
+dist/
+ramify
+ramifyd
+*.exe
+*.test
+vendor/
+
+# Runtime state and secrets (see .gitignore for the same list)
+ramify.yaml
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+deploy_key
+deploy_key.pub
+known_hosts
+.acme-storage/
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.log
+
+# Local-only working notes
+DECISIONS.md
+prompt.md
+report.md

@@ -1,5 +1,10 @@
 preview.example.com:53 {
-    file /zones/preview.example.com.zone
+    # The default reload interval is 1m. The harness rewrites this zone and then
+    # expects the change to be served within seconds — lego waits a fixed 2s before
+    # asking Pebble to validate the DNS-01 TXT record — so poll far more often.
+    file /zones/preview.example.com.zone {
+        reload 500ms
+    }
     log
     errors
 }
