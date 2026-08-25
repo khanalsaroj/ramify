@@ -8,8 +8,15 @@ package acme
 import (
 	"context"
 	"crypto"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/hex"
+	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -42,6 +49,9 @@ type Config struct {
 	// HTTPClient, if set, is used for all ACME directory/order/challenge HTTP
 	// calls — needed in test harnesses to trust a self-signed CA (Pebble).
 	HTTPClient *http.Client
+	// StorageDir persists issued certificate material so restart does not lose
+	// the ability to reuse or revoke certificates.
+	StorageDir string
 }
 
 // acmeUser implements registration.User.
@@ -65,16 +75,19 @@ func (u *acmeUser) GetPrivateKey() crypto.PrivateKey { return u.key }
 type issuedCert struct {
 	ref  providerapi.CertRef
 	pem  []byte
+	key  []byte
 	leaf *time.Time
 }
 
 // Provider implements providerapi.CertificateProvider.
 type Provider struct {
-	client *lego.Client
-	zone   string
+	client     *lego.Client
+	zone       string
+	storageDir string
 
-	mu    sync.Mutex
-	cache map[string]issuedCert // domain -> issued certificate
+	mu      sync.Mutex
+	issueMu sync.Mutex
+	cache   map[string]issuedCert // domain -> issued certificate
 }
 
 var _ providerapi.CertificateProvider = (*Provider)(nil)
@@ -82,9 +95,20 @@ var _ providerapi.CertificateProvider = (*Provider)(nil)
 // New constructs a Provider, generating a fresh ACME account key and registering it
 // with the CA at cfg.CADirURL.
 func New(cfg Config) (*Provider, error) {
-	key, err := certcrypto.GeneratePrivateKey(certcrypto.EC256)
+	if cfg.StorageDir == "" {
+		return nil, fmt.Errorf("acme: storage directory is required")
+	}
+	if err := os.MkdirAll(cfg.StorageDir, 0o700); err != nil {
+		return nil, fmt.Errorf("acme: creating storage directory: %w", err)
+	}
+	key, generated, err := loadOrGenerateAccountKey(cfg.StorageDir)
 	if err != nil {
 		return nil, fmt.Errorf("acme: generating account key: %w", err)
+	}
+	if generated {
+		if err := persistAccountKey(cfg.StorageDir, key); err != nil {
+			return nil, err
+		}
 	}
 
 	user := &acmeUser{email: cfg.Email, key: key}
@@ -99,9 +123,12 @@ func New(cfg Config) (*Provider, error) {
 		return nil, fmt.Errorf("acme: constructing client: %w", err)
 	}
 
-	reg, err := client.Registration.Register(registration.RegisterOptions{TermsOfServiceAgreed: true})
+	reg, err := client.Registration.ResolveAccountByKey()
 	if err != nil {
-		return nil, fmt.Errorf("acme: registering account: %w", err)
+		reg, err = client.Registration.Register(registration.RegisterOptions{TermsOfServiceAgreed: true})
+		if err != nil {
+			return nil, fmt.Errorf("acme: registering account: %w", err)
+		}
 	}
 	user.registration = reg
 
@@ -114,13 +141,67 @@ func New(cfg Config) (*Provider, error) {
 		return nil, fmt.Errorf("acme: configuring dns-01 challenge: %w", err)
 	}
 
-	return &Provider{client: client, zone: cfg.Zone, cache: make(map[string]issuedCert)}, nil
+	p := &Provider{client: client, zone: cfg.Zone, storageDir: cfg.StorageDir, cache: make(map[string]issuedCert)}
+	if err := p.loadCache(); err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+func accountKeyPath(storageDir string) string {
+	return filepath.Join(storageDir, "account-key.pem")
+}
+
+func loadOrGenerateAccountKey(storageDir string) (crypto.PrivateKey, bool, error) {
+	data, err := os.ReadFile(accountKeyPath(storageDir))
+	if err == nil {
+		block, _ := pem.Decode(data)
+		if block == nil {
+			return nil, false, fmt.Errorf("acme: decoding persisted account key: no PEM block")
+		}
+		key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+		if err != nil {
+			return nil, false, fmt.Errorf("acme: parsing persisted account key: %w", err)
+		}
+		return key, false, nil
+	}
+	if !os.IsNotExist(err) {
+		return nil, false, fmt.Errorf("acme: reading persisted account key: %w", err)
+	}
+	key, err := certcrypto.GeneratePrivateKey(certcrypto.EC256)
+	if err != nil {
+		return nil, false, err
+	}
+	return key, true, nil
+}
+
+func persistAccountKey(storageDir string, key crypto.PrivateKey) error {
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		return fmt.Errorf("acme: encoding account key: %w", err)
+	}
+	data := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
+	if err := os.WriteFile(accountKeyPath(storageDir), data, 0o600); err != nil {
+		return fmt.Errorf("acme: persisting account key: %w", err)
+	}
+	return nil
 }
 
 // EnsureCertificate implements providerapi.CertificateProvider. It returns a cached
 // certificate for domain if one is already issued and not within 30 days of expiry,
 // or obtains a new one via the ACME DNS-01 flow.
 func (p *Provider) EnsureCertificate(_ context.Context, domain string) (providerapi.CertRef, error) {
+	p.mu.Lock()
+	if cached, ok := p.cache[domain]; ok && cached.leaf != nil && time.Until(*cached.leaf) > 30*24*time.Hour {
+		p.mu.Unlock()
+		return cached.ref, nil
+	}
+	p.mu.Unlock()
+
+	p.issueMu.Lock()
+	defer p.issueMu.Unlock()
+	// Another concurrent caller may have filled the cache while this caller
+	// waited for the issuance lock.
 	p.mu.Lock()
 	if cached, ok := p.cache[domain]; ok && cached.leaf != nil && time.Until(*cached.leaf) > 30*24*time.Hour {
 		p.mu.Unlock()
@@ -142,10 +223,14 @@ func (p *Provider) EnsureCertificate(_ context.Context, domain string) (provider
 		return providerapi.CertRef{}, fmt.Errorf("acme: parsing issued certificate for %s: %w", domain, err)
 	}
 
-	ref := providerapi.CertRef{Domain: domain, ExpiresAt: leafExpiry.Format(time.RFC3339)}
+	ref := providerapi.CertRef{Domain: domain, ExpiresAt: leafExpiry.Format(time.RFC3339), CertificatePEM: res.Certificate, PrivateKeyPEM: res.PrivateKey}
 
+	issued := issuedCert{ref: ref, pem: res.Certificate, key: res.PrivateKey, leaf: &leafExpiry}
+	if err := p.persist(domain, issued); err != nil {
+		return providerapi.CertRef{}, err
+	}
 	p.mu.Lock()
-	p.cache[domain] = issuedCert{ref: ref, pem: res.Certificate, leaf: &leafExpiry}
+	p.cache[domain] = issued
 	p.mu.Unlock()
 
 	return ref, nil
@@ -169,6 +254,78 @@ func (p *Provider) RevokeCertificate(_ context.Context, domain string) error {
 	p.mu.Lock()
 	delete(p.cache, domain)
 	p.mu.Unlock()
+	if err := os.Remove(p.cachePath(domain)); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("acme: removing persisted certificate for %s: %w", domain, err)
+	}
+	return nil
+}
+
+type persistedCertificate struct {
+	Domain     string              `json:"domain"`
+	Ref        providerapi.CertRef `json:"ref"`
+	PEM        []byte              `json:"certificate_pem"`
+	PrivateKey []byte              `json:"private_key_pem"`
+	ExpiresAt  time.Time           `json:"expires_at"`
+}
+
+func (p *Provider) cachePath(domain string) string {
+	sum := sha256.Sum256([]byte(domain))
+	return filepath.Join(p.storageDir, hex.EncodeToString(sum[:])+".json")
+}
+
+func (p *Provider) persist(domain string, cert issuedCert) error {
+	data, err := json.Marshal(persistedCertificate{Domain: domain, Ref: cert.ref, PEM: cert.pem, PrivateKey: cert.key, ExpiresAt: *cert.leaf})
+	if err != nil {
+		return fmt.Errorf("acme: encoding persisted certificate %s: %w", domain, err)
+	}
+	tmp, err := os.CreateTemp(p.storageDir, ".certificate-*.tmp")
+	if err != nil {
+		return fmt.Errorf("acme: creating certificate temp file: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }()
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("acme: securing certificate temp file: %w", err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("acme: writing persisted certificate: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("acme: closing persisted certificate: %w", err)
+	}
+	if err := os.Rename(tmpName, p.cachePath(domain)); err != nil {
+		return fmt.Errorf("acme: replacing persisted certificate: %w", err)
+	}
+	return nil
+}
+
+func (p *Provider) loadCache() error {
+	entries, err := os.ReadDir(p.storageDir)
+	if err != nil {
+		return fmt.Errorf("acme: reading certificate storage: %w", err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(p.storageDir, entry.Name()))
+		if err != nil {
+			return fmt.Errorf("acme: reading persisted certificate %s: %w", entry.Name(), err)
+		}
+		var saved persistedCertificate
+		if err := json.Unmarshal(data, &saved); err != nil {
+			return fmt.Errorf("acme: decoding persisted certificate %s: %w", entry.Name(), err)
+		}
+		if saved.Domain == "" || len(saved.PEM) == 0 || saved.ExpiresAt.IsZero() {
+			continue
+		}
+		leaf := saved.ExpiresAt
+		saved.Ref.CertificatePEM = saved.PEM
+		saved.Ref.PrivateKeyPEM = saved.PrivateKey
+		p.cache[saved.Domain] = issuedCert{ref: saved.Ref, pem: saved.PEM, key: saved.PrivateKey, leaf: &leaf}
+	}
 	return nil
 }
 

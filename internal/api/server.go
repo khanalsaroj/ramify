@@ -8,6 +8,7 @@ package api
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -21,6 +22,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/khanalsaroj/ramify/internal/core"
+	"github.com/khanalsaroj/ramify/internal/metrics"
 	"github.com/khanalsaroj/ramify/internal/store"
 	"github.com/khanalsaroj/ramify/providers/providerapi"
 )
@@ -42,6 +44,7 @@ type Server struct {
 	baseDomain   string
 	subdomainMax int
 	logger       *slog.Logger
+	metrics      *metrics.Metrics
 
 	router chi.Router
 }
@@ -54,9 +57,17 @@ func NewServer(
 	deploy providerapi.DeployProvider,
 	baseDomain string,
 	logger *slog.Logger,
+	metricSet ...*metrics.Metrics,
 ) *Server {
 	if logger == nil {
 		logger = slog.Default()
+	}
+	var m *metrics.Metrics
+	if len(metricSet) > 0 {
+		m = metricSet[0]
+	}
+	if m == nil {
+		m = &metrics.Metrics{}
 	}
 	s := &Server{
 		store:        st,
@@ -66,6 +77,7 @@ func NewServer(
 		baseDomain:   baseDomain,
 		subdomainMax: 63,
 		logger:       logger,
+		metrics:      m,
 	}
 	s.router = s.routes()
 	return s
@@ -80,6 +92,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (s *Server) routes() chi.Router {
 	r := chi.NewRouter()
 	r.Get("/healthz", s.handleHealthz)
+	r.Get("/readyz", s.handleReadyz)
+	r.Get("/metrics", s.handleMetrics)
 	r.Post("/webhooks/github", s.handleWebhook)
 	r.Route("/environments", func(r chi.Router) {
 		r.Get("/", s.handleListEnvironments)
@@ -161,12 +175,17 @@ func listenUnix(path string) (net.Listener, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return nil, fmt.Errorf("creating socket directory: %w", err)
 	}
-	if err := os.RemoveAll(path); err != nil {
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("removing stale socket %s: %w", path, err)
 	}
 	l, err := net.Listen("unix", path)
 	if err != nil {
 		return nil, fmt.Errorf("listening on %s: %w", path, err)
+	}
+	if err := os.Chmod(path, 0o660); err != nil {
+		_ = l.Close()
+		_ = os.Remove(path)
+		return nil, fmt.Errorf("securing socket %s: %w", path, err)
 	}
 	return l, nil
 }
@@ -177,7 +196,9 @@ func listenUnix(path string) (net.Listener, error) {
 func tokenAuth(token string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Header.Get("Authorization") != "Bearer "+token {
+			provided := r.Header.Get("Authorization")
+			expected := "Bearer " + token
+			if token == "" || subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) != 1 {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}

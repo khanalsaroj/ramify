@@ -40,6 +40,7 @@ func newRootCmd() *cobra.Command {
 		newLogsCmd(),
 		newDestroyCmd(),
 		newDoctorCmd(),
+		newBackupCmd(),
 	)
 	return root
 }

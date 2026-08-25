@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/khanalsaroj/ramify/internal/store"
 	"github.com/khanalsaroj/ramify/providers/providerapi"
 )
 
@@ -15,6 +16,7 @@ import (
 const (
 	EventKindApplyRequested   = "apply_requested"
 	EventKindDestroyRequested = "destroy_requested"
+	EventKindWebhookReceived  = store.EventKindWebhookReceived
 )
 
 // ApplyRequest is the reconciler-level request to create or update an environment.
@@ -57,6 +59,12 @@ type destroyRequestedPayload struct {
 	Branch  string `json:"branch"`
 }
 
+// webhookReceivedPayload is the durable inbox representation of a normalized
+// provider event. It is persisted before the HTTP webhook is acknowledged.
+type webhookReceivedPayload struct {
+	Event providerapi.Event `json:"event"`
+}
+
 func marshalApplyPayload(req ApplyRequest) (string, error) {
 	b, err := json.Marshal(applyRequestedPayload(req))
 	if err != nil {
@@ -79,4 +87,23 @@ func unmarshalApplyPayload(payload string) (applyRequestedPayload, error) {
 		return applyRequestedPayload{}, fmt.Errorf("unmarshaling apply event payload: %w", err)
 	}
 	return p, nil
+}
+
+// MarshalWebhookPayload serializes a normalized provider event for the durable
+// webhook inbox.
+func MarshalWebhookPayload(ev providerapi.Event) (string, error) {
+	b, err := json.Marshal(webhookReceivedPayload{Event: ev})
+	if err != nil {
+		return "", fmt.Errorf("marshaling webhook event payload: %w", err)
+	}
+	return string(b), nil
+}
+
+// UnmarshalWebhookPayload decodes a durable webhook inbox payload.
+func UnmarshalWebhookPayload(payload string) (providerapi.Event, error) {
+	var p webhookReceivedPayload
+	if err := json.Unmarshal([]byte(payload), &p); err != nil {
+		return providerapi.Event{}, fmt.Errorf("unmarshaling webhook event payload: %w", err)
+	}
+	return p.Event, nil
 }

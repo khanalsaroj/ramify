@@ -6,8 +6,10 @@ import "context"
 
 // CertRef identifies an issued TLS certificate.
 type CertRef struct {
-	Domain    string
-	ExpiresAt string // RFC3339
+	Domain         string
+	ExpiresAt      string // RFC3339
+	CertificatePEM []byte `json:"-"`
+	PrivateKeyPEM  []byte `json:"-"`
 }
 
 // CertificateProvider issues and revokes TLS certificates for preview environment

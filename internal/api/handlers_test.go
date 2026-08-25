@@ -219,6 +219,7 @@ func TestWebhookBranchPushedTriggersApply(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/webhooks/github", bytes.NewReader(payload))
 	req.Header.Set("X-Hub-Signature-256", sign(testHarnessSecret, payload))
+	req.Header.Set("X-GitHub-Delivery", "delivery-branch-pushed")
 	rec := httptest.NewRecorder()
 	h.server.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusAccepted, rec.Code)
@@ -227,6 +228,25 @@ func TestWebhookBranchPushedTriggersApply(t *testing.T) {
 		env, err := h.store.GetEnvironmentByProjectBranch(context.Background(), "acme/web", "feature-x")
 		return err == nil && env.Status == store.StatusReady
 	}, 5*time.Second, 10*time.Millisecond, "webhook-triggered apply must complete asynchronously")
+}
+
+func TestWebhookDuplicateDeliveryIsAcknowledgedWithoutNewWork(t *testing.T) {
+	h := newTestHarness(t)
+	payload := []byte(`{"ref":"refs/heads/feature-x"}`)
+	signature := sign(testHarnessSecret, payload)
+	h.git.QueueEvent(signature, providerapi.Event{Kind: "branch_pushed", Project: "acme/web", Branch: "feature-x", Artifact: "sha123"})
+	h.git.QueueEvent(signature, providerapi.Event{Kind: "branch_pushed", Project: "acme/web", Branch: "feature-x", Artifact: "sha123"})
+
+	request := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/webhooks/github", bytes.NewReader(payload))
+		req.Header.Set("X-Hub-Signature-256", signature)
+		req.Header.Set("X-GitHub-Delivery", "delivery-duplicate")
+		rec := httptest.NewRecorder()
+		h.server.ServeHTTP(rec, req)
+		return rec
+	}
+	require.Equal(t, http.StatusAccepted, request().Code)
+	require.Equal(t, http.StatusOK, request().Code)
 }
 
 func TestWebhookPRClosedTriggersDestroyWhenEnvironmentExists(t *testing.T) {
@@ -242,6 +262,7 @@ func TestWebhookPRClosedTriggersDestroyWhenEnvironmentExists(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/webhooks/github", bytes.NewReader(payload))
 	req.Header.Set("X-Hub-Signature-256", sign(testHarnessSecret, payload))
+	req.Header.Set("X-GitHub-Delivery", "delivery-pr-closed")
 	respRec := httptest.NewRecorder()
 	h.server.ServeHTTP(respRec, req)
 	require.Equal(t, http.StatusAccepted, respRec.Code)
@@ -261,6 +282,7 @@ func TestWebhookPRClosedNoExistingEnvironmentIsNoop(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/webhooks/github", bytes.NewReader(payload))
 	req.Header.Set("X-Hub-Signature-256", sign(testHarnessSecret, payload))
+	req.Header.Set("X-GitHub-Delivery", "delivery-pr-closed-missing")
 	rec := httptest.NewRecorder()
 	h.server.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusAccepted, rec.Code)

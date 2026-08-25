@@ -79,3 +79,16 @@ func TestLeafNotAfterEmptyBundle(t *testing.T) {
 	_, err := leafNotAfter(nil)
 	require.Error(t, err)
 }
+
+func TestAccountKeyPersistsAcrossRestart(t *testing.T) {
+	dir := t.TempDir()
+	key, generated, err := loadOrGenerateAccountKey(dir)
+	require.NoError(t, err)
+	require.True(t, generated)
+	require.NoError(t, persistAccountKey(dir, key))
+
+	reloaded, generated, err := loadOrGenerateAccountKey(dir)
+	require.NoError(t, err)
+	require.False(t, generated)
+	require.Equal(t, key, reloaded)
+}

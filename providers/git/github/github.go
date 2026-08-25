@@ -198,6 +198,35 @@ func (p *Provider) CommentOnPR(ctx context.Context, project string, prNumber int
 	return nil
 }
 
+// UpsertPreviewComment updates the existing Ramify-owned status comment when
+// present, otherwise creates one. The marker makes repeated reconciliation
+// notifications idempotent and avoids PR comment spam.
+func (p *Provider) UpsertPreviewComment(ctx context.Context, project string, prNumber int, body string) error {
+	owner, repo, err := splitProject(project)
+	if err != nil {
+		return fmt.Errorf("github: upsert preview comment: %w", err)
+	}
+	const marker = "<!-- ramify-preview -->"
+	markedBody := marker + "\n" + body
+	comments, _, err := p.client.Issues.ListComments(ctx, owner, repo, prNumber, &ghgithub.IssueListCommentsOptions{ListOptions: ghgithub.ListOptions{PerPage: 100}})
+	if err != nil {
+		return fmt.Errorf("github: list comments for %s#%d: %w", project, prNumber, err)
+	}
+	for _, comment := range comments {
+		if comment.Body == nil || !strings.Contains(*comment.Body, marker) || comment.ID == nil {
+			continue
+		}
+		if _, _, err := p.client.Issues.EditComment(ctx, owner, repo, *comment.ID, &ghgithub.IssueComment{Body: &markedBody}); err != nil {
+			return fmt.Errorf("github: update preview comment %s#%d: %w", project, prNumber, err)
+		}
+		return nil
+	}
+	if _, _, err := p.client.Issues.CreateComment(ctx, owner, repo, prNumber, &ghgithub.IssueComment{Body: &markedBody}); err != nil {
+		return fmt.Errorf("github: create preview comment %s#%d: %w", project, prNumber, err)
+	}
+	return nil
+}
+
 func splitProject(project string) (owner, repo string, err error) {
 	parts := strings.SplitN(project, "/", 2)
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {

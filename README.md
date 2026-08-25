@@ -10,7 +10,7 @@ deployed to infrastructure you already operate.
 
 [![CI](https://github.com/khanalsaroj/ramify/actions/workflows/ci.yml/badge.svg)](https://github.com/khanalsaroj/ramify/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/khanalsaroj/ramify?sort=semver)](https://github.com/khanalsaroj/ramify/releases)
-[![Go Version](https://img.shields.io/badge/go-1.23%2B-00ADD8?logo=go&logoColor=white)](go.mod)
+[![Go Version](https://img.shields.io/badge/go-1.25.6%2B-00ADD8?logo=go&logoColor=white)](go.mod)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-3F7D52)](LICENSE)
 [![Docs](https://img.shields.io/badge/docs-quickstart-A8551E)](docs/quickstart.md)
 
@@ -67,6 +67,7 @@ This README is the map. Everything else lives in one of these:
 | **[`docs/providers.md`](docs/providers.md)** | The provider architecture, the shared contract test suites, and how to run them against a real account instead of the in-memory fakes CI uses. |
 | **[`DECISIONS.md`](DECISIONS.md)** | Every judgment call made during the build, and what's explicitly deferred — including an honest note on what's *not* independently verified yet. |
 | **[`CONTRIBUTING.md`](CONTRIBUTING.md)** | Dev setup, required checks, commit style. |
+| **[`docs/operations.md`](docs/operations.md)** | Health, metrics, backups, durable event processing, and production security. |
 
 **Turning on the documentation site:** Settings → Pages → Build and deployment →
 Deploy from a branch → Branch: `main`, folder: `/docs`. Publishes at
@@ -94,6 +95,10 @@ flowchart TB
     Core --> CERT
     Core --> NOT
 ```
+
+Webhook deliveries are durably stored and deduplicated before acknowledgement.
+The daemon continuously retries due failed events and exposes `/readyz` and
+`/metrics` for operational monitoring. See [`docs/operations.md`](docs/operations.md).
 
 Write your own provider by implementing one of these interfaces and wiring it into
 `ramifyd`'s startup — a shared **contract test suite** per interface (in
@@ -216,6 +221,7 @@ by default, or a token-protected TCP address via `--addr`/`--token`.
 | `ramify logs <branch>` | `--project` | Prints the deployed container's logs |
 | `ramify destroy <branch>` | `--project`, `-y`/`--yes` | Tears an environment down manually, with a confirmation prompt |
 | `ramify doctor` | `--config` | Validates config, Cloudflare, SSH, webhook secret, and ACME connectivity — independently, with named failures |
+| `ramify backup` | `--config`, `--output` | Creates a consistent SQLite backup without overwriting an existing destination |
 
 Full flags per command: `ramify <command> --help`.
 

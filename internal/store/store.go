@@ -21,6 +21,10 @@ const (
 	StatusDestroyed  = "destroyed"
 )
 
+// EventKindWebhookReceived is a durable inbox event created before a webhook
+// request is acknowledged. Its payload contains the normalized provider event.
+const EventKindWebhookReceived = "webhook_received"
+
 // ErrNotFound is returned when a lookup by ID or unique key finds no row.
 var ErrNotFound = errors.New("store: not found")
 
@@ -62,7 +66,11 @@ type Event struct {
 	ID            string
 	EnvironmentID string // empty if not associated with an environment
 	Kind          string
+	DedupeKey     string // optional provider delivery ID; unique when present
 	Payload       string // JSON
+	Attempts      int
+	NextAttemptAt *time.Time
+	LastError     string
 	ProcessedAt   *time.Time
 	CreatedAt     time.Time
 }
@@ -100,8 +108,19 @@ type Store interface {
 	// ListUnprocessedEvents returns every event with a NULL processed_at, oldest
 	// first.
 	ListUnprocessedEvents(ctx context.Context) ([]Event, error)
+	// ListDueEvents returns pending events whose retry time has arrived.
+	ListDueEvents(ctx context.Context, now time.Time, limit int) ([]Event, error)
+	// ClaimEvent atomically leases a due event to one worker.
+	ClaimEvent(ctx context.Context, id string, now, leaseUntil time.Time) (bool, error)
 	// MarkEventProcessed sets processed_at on the event with the given ID.
 	MarkEventProcessed(ctx context.Context, id string, processedAt time.Time) error
+	// MarkEventRetry records a failed attempt and schedules the next retry.
+	MarkEventRetry(ctx context.Context, id string, nextAttempt time.Time, lastError string) error
+	// PruneProcessedEvents removes old completed events and returns the count.
+	PruneProcessedEvents(ctx context.Context, before time.Time, limit int) (int, error)
+	// Backup creates a consistent SQLite backup at path without modifying the
+	// live database.
+	Backup(ctx context.Context, path string) error
 
 	// Close releases resources held by the store.
 	Close() error

@@ -7,6 +7,9 @@ package compose
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"strings"
 
@@ -37,7 +40,32 @@ type Provider struct {
 	// right container by hostname is the operator's reverse proxy's job, wired via
 	// the compose file this provider drives — Ramify itself never inspects
 	// container networking.
-	dnsTarget string
+	dnsTarget      string
+	certificateDir string
+}
+
+// SetCertificateDir configures the remote directory where certificate material
+// is installed. The Compose file/reverse proxy remains responsible for using it.
+func (p *Provider) SetCertificateDir(dir string) { p.certificateDir = dir }
+
+// InstallCertificate writes certificate and private-key material to the remote
+// deploy host using base64-encoded, shell-quoted payloads. The file names are
+// content-independent hashes of the domain, preventing path traversal.
+func (p *Provider) InstallCertificate(ctx context.Context, domain string, certificatePEM, privateKeyPEM []byte) error {
+	if p.certificateDir == "" {
+		return fmt.Errorf("compose: certificate directory is not configured")
+	}
+	sum := sha256.Sum256([]byte(domain))
+	stem := hex.EncodeToString(sum[:])
+	certPath := p.certificateDir + "/" + stem + ".crt"
+	keyPath := p.certificateDir + "/" + stem + ".key"
+	cmd := fmt.Sprintf("mkdir -p %s && printf '%%s' %s | base64 -d > %s && printf '%%s' %s | base64 -d > %s && chmod 0644 %s && chmod 0600 %s",
+		shellQuote(p.certificateDir), shellQuote(base64.StdEncoding.EncodeToString(certificatePEM)), shellQuote(certPath),
+		shellQuote(base64.StdEncoding.EncodeToString(privateKeyPEM)), shellQuote(keyPath), shellQuote(certPath), shellQuote(keyPath))
+	if _, err := p.runner.Run(ctx, cmd); err != nil {
+		return fmt.Errorf("compose: install certificate %s: %w", domain, err)
+	}
+	return nil
 }
 
 var _ providerapi.DeployProvider = (*Provider)(nil)

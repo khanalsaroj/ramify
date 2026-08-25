@@ -14,7 +14,7 @@ precisely so nothing is left assumed.
 - A domain (or subdomain) whose DNS is managed by Cloudflare, e.g. `preview.example.com`.
 - One VPS you control, reachable over SSH, with Docker and the Compose plugin
   installed (`docker compose version` should work on it).
-- Either the installer below, or Go 1.23+ locally to build the two Ramify
+- Either the installer below, or Go 1.25.6+ locally to build the two Ramify
   binaries from source.
 
 ## 1. Provision the pieces Ramify doesn't manage
@@ -120,6 +120,7 @@ ramify init \
   --deploy-ssh-key /etc/ramify/deploy_key \
   --deploy-ssh-known-hosts /etc/ramify/known_hosts \
   --deploy-compose-file /srv/ramify/docker-compose.yml \
+  --deploy-certificate-dir /srv/ramify/certificates \
   --deploy-dns-target YOUR_VPS_IP \
   --dns-zone preview.example.com \
   --cloudflare-token '$RAMIFY_CLOUDFLARE_API_TOKEN' \
@@ -203,7 +204,9 @@ ramify status your-branch-name
 ```
 
 report `Status: ready`, a comment appear on the PR with the preview URL, and
-`https://your-branch-name.preview.example.com` resolve and serve TLS. Closing the
+`https://your-branch-name.preview.example.com` resolve and can serve TLS when the
+reverse proxy is configured to use the certificate files under
+`deploy.certificate_dir`. Closing the
 PR tears the environment down automatically; `ramify destroy your-branch-name`
 does the same thing manually, and `ramify list` shows everything currently
 running.

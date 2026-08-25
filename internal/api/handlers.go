@@ -23,6 +23,10 @@ import (
 // the HTTP response open past GitHub's own webhook delivery timeout.
 const webhookProcessTimeout = 5 * time.Minute
 
+const maxWebhookBody = 2 << 20
+
+const maxAPIRequestBody = 1 << 20
+
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	if _, err := s.store.ListEnvironments(r.Context()); err != nil {
 		s.writeError(w, http.StatusServiceUnavailable, "store unavailable")
@@ -31,13 +35,29 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.store.ListUnprocessedEvents(r.Context()); err != nil {
+		s.writeError(w, http.StatusServiceUnavailable, "event store unavailable")
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+	if err := s.metrics.WritePrometheus(w); err != nil {
+		s.logger.Error("writing metrics", "error", err)
+	}
+}
+
 // handleWebhook verifies and parses the inbound GitHub webhook, then triggers
 // reconciliation asynchronously: Apply/Destroy already persist a request event to
 // the store before making any provider call, so if the process dies mid-request the
 // next startup's ReplayUnprocessedEvents recovers it. Responding before that work
 // completes keeps webhook delivery well under GitHub's timeout.
 func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(r.Body)
+	s.metrics.WebhookReceived.Add(1)
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxWebhookBody))
 	if err != nil {
 		s.writeError(w, http.StatusBadRequest, "reading request body")
 		return
@@ -46,46 +66,74 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	ev, err := s.git.ParseWebhook(r.Context(), body, r.Header.Get("X-Hub-Signature-256"))
 	switch {
 	case errors.Is(err, providerapi.ErrInvalidWebhookSignature):
+		s.metrics.WebhookRejected.Add(1)
 		s.writeError(w, http.StatusUnauthorized, "invalid webhook signature")
 		return
 	case errors.Is(err, providerapi.ErrUnhandledWebhookEvent):
 		w.WriteHeader(http.StatusOK)
 		return
 	case err != nil:
+		s.metrics.WebhookRejected.Add(1)
 		s.logger.ErrorContext(r.Context(), "webhook: parse failed", "error", err)
 		s.writeError(w, http.StatusBadRequest, "invalid webhook payload")
 		return
 	}
 
-	go s.processEvent(ev) //nolint:gosec // deliberately detached from the request context; see processEvent's doc comment
+	payload, err := core.MarshalWebhookPayload(ev)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "encoding webhook event")
+		return
+	}
+	deliveryID := r.Header.Get("X-GitHub-Delivery")
+	if deliveryID == "" {
+		s.writeError(w, http.StatusBadRequest, "missing GitHub delivery ID")
+		return
+	}
+	firstRetry := time.Now().UTC()
+	inbox, err := s.store.CreateEvent(r.Context(), store.Event{
+		Kind:          store.EventKindWebhookReceived,
+		DedupeKey:     deliveryID,
+		Payload:       payload,
+		NextAttemptAt: &firstRetry,
+	})
+	if errors.Is(err, store.ErrConflict) {
+		s.metrics.WebhookDuplicates.Add(1)
+		// GitHub retries deliveries. The unique delivery ID makes retries safe.
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if err != nil {
+		s.metrics.WebhookRejected.Add(1)
+		s.logger.ErrorContext(r.Context(), "webhook: persisting inbox event", "error", err, "delivery_id", deliveryID)
+		s.writeError(w, http.StatusServiceUnavailable, "persisting webhook event")
+		return
+	}
+
+	go s.processEvent(inbox.ID, ev) //nolint:gosec // durable inbox is persisted before this worker starts
 	w.WriteHeader(http.StatusAccepted)
 }
 
-func (s *Server) processEvent(ev providerapi.Event) {
+func (s *Server) processEvent(eventID string, ev providerapi.Event) {
 	ctx, cancel := context.WithTimeout(context.Background(), webhookProcessTimeout)
 	defer cancel()
-
-	switch ev.Kind {
-	case "branch_pushed", "pr_synchronized":
-		subdomain := domain.Normalize(ev.Branch, s.subdomainMax)
-		req := core.ApplyRequestFromEvent(ev, subdomain)
-		if _, err := s.reconciler.Apply(ctx, req); err != nil {
-			s.logger.ErrorContext(ctx, "webhook: apply failed", "error", err, "project", ev.Project, "branch", ev.Branch)
-		}
-	case "pr_closed", "branch_deleted":
-		env, err := s.store.GetEnvironmentByProjectBranch(ctx, ev.Project, ev.Branch)
-		if errors.Is(err, store.ErrNotFound) {
-			return
-		}
+	claimed, err := s.store.ClaimEvent(ctx, eventID, time.Now().UTC(), time.Now().UTC().Add(webhookProcessTimeout))
+	if err != nil || !claimed {
 		if err != nil {
-			s.logger.ErrorContext(ctx, "webhook: environment lookup failed", "error", err, "project", ev.Project, "branch", ev.Branch)
-			return
+			s.logger.ErrorContext(ctx, "webhook: claiming inbox event failed", "error", err, "event_id", eventID)
 		}
-		if err := s.reconciler.Destroy(ctx, env); err != nil {
-			s.logger.ErrorContext(ctx, "webhook: destroy failed", "error", err, "environment_id", env.ID)
+		return
+	}
+	if err := s.reconciler.ProcessWebhookEvent(ctx, ev); err != nil {
+		s.metrics.ReconciliationFailures.Add(1)
+		s.logger.ErrorContext(ctx, "webhook: processing failed", "error", err, "project", ev.Project, "branch", ev.Branch)
+		if retryErr := s.store.MarkEventRetry(ctx, eventID, time.Now().UTC().Add(time.Second), err.Error()); retryErr != nil {
+			s.logger.ErrorContext(ctx, "webhook: scheduling retry failed", "error", retryErr, "event_id", eventID)
 		}
-	default:
-		s.logger.WarnContext(ctx, "webhook: unrecognized event kind", "kind", ev.Kind)
+		return
+	}
+	s.metrics.Reconciliations.Add(1)
+	if err := s.store.MarkEventProcessed(ctx, eventID, time.Now().UTC()); err != nil {
+		s.logger.ErrorContext(ctx, "webhook: marking inbox event processed", "error", err, "event_id", eventID)
 	}
 }
 
@@ -134,6 +182,7 @@ type createEnvironmentRequest struct {
 }
 
 func (s *Server) handleCreateEnvironment(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxAPIRequestBody)
 	var body createEnvironmentRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		s.writeError(w, http.StatusBadRequest, "invalid request body")
@@ -143,8 +192,14 @@ func (s *Server) handleCreateEnvironment(w http.ResponseWriter, r *http.Request)
 		s.writeError(w, http.StatusBadRequest, "project, branch, and artifact_ref are required")
 		return
 	}
+	if len(body.Project) > 256 || len(body.Branch) > 256 || len(body.ArtifactRef) > 1024 || len(body.Subdomain) > 63 {
+		s.writeError(w, http.StatusBadRequest, "request fields exceed maximum length")
+		return
+	}
 	if body.Subdomain == "" {
 		body.Subdomain = domain.Normalize(body.Branch, s.subdomainMax)
+	} else {
+		body.Subdomain = domain.Normalize(body.Subdomain, s.subdomainMax)
 	}
 
 	env, err := s.reconciler.Apply(r.Context(), core.ApplyRequest{
@@ -165,6 +220,7 @@ type updateEnvironmentRequest struct {
 }
 
 func (s *Server) handleUpdateEnvironment(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxAPIRequestBody)
 	existing, ok := s.lookupEnvironment(w, r)
 	if !ok {
 		return
@@ -177,6 +233,10 @@ func (s *Server) handleUpdateEnvironment(w http.ResponseWriter, r *http.Request)
 	}
 	if body.ArtifactRef == "" {
 		s.writeError(w, http.StatusBadRequest, "artifact_ref is required")
+		return
+	}
+	if len(body.ArtifactRef) > 1024 {
+		s.writeError(w, http.StatusBadRequest, "artifact_ref exceeds maximum length")
 		return
 	}
 

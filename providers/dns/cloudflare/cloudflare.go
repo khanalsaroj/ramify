@@ -22,6 +22,10 @@ import (
 // name carries a matching OwnershipTag.
 var ErrOwnershipMismatch = errors.New("cloudflare: ownership tag mismatch, refusing delete")
 
+// ErrUnmanagedRecord indicates that a record already exists at a name but is
+// not owned by the Ramify instance attempting to manage it.
+var ErrUnmanagedRecord = errors.New("cloudflare: unmanaged record collision")
+
 // dnsClient is the subset of *cloudflare.API used by Provider, narrowed to an
 // interface so tests can substitute an in-memory fake instead of making real API
 // calls.
@@ -88,10 +92,58 @@ func (p *Provider) EnsureRecord(ctx context.Context, rec providerapi.DNSRecord) 
 	}
 	rc := cf.ZoneIdentifier(zoneID)
 
-	if err := p.ensureSingleRecord(ctx, rc, rec.Name, rec.Type, rec.Value); err != nil {
-		return fmt.Errorf("cloudflare: ensure record %s: %w", rec.Name, err)
-	}
 	if rec.Type == "TXT" {
+		// ACME and other TXT users may legitimately have multiple values at
+		// one name. Never update an arbitrary TXT record.
+		existing, err := p.listAll(ctx, rc, cf.ListDNSRecordsParams{Name: rec.Name, Type: "TXT"})
+		if err != nil {
+			return fmt.Errorf("cloudflare: list TXT records %s: %w", rec.Name, err)
+		}
+		for _, record := range existing {
+			if record.Content == rec.Value {
+				return nil
+			}
+		}
+		if _, err := p.client.CreateDNSRecord(ctx, rc, cf.CreateDNSRecordParams{Type: "TXT", Name: rec.Name, Content: rec.Value, TTL: 60}); err != nil {
+			return fmt.Errorf("cloudflare: creating TXT record %s: %w", rec.Name, err)
+		}
+		return nil
+	}
+
+	// A/CNAME records may only be created or updated when the matching TXT
+	// ownership marker already exists or the name is otherwise empty. This
+	// prevents Ramify from overwriting an operator-owned record.
+	txtRecords, err := p.listAll(ctx, rc, cf.ListDNSRecordsParams{Name: rec.Name, Type: "TXT"})
+	if err != nil {
+		return fmt.Errorf("cloudflare: list ownership TXT %s: %w", rec.Name, err)
+	}
+	owned := false
+	for _, record := range txtRecords {
+		if record.Content == rec.OwnershipTag {
+			owned = true
+			break
+		}
+	}
+	mainRecords, err := p.listAll(ctx, rc, cf.ListDNSRecordsParams{Name: rec.Name, Type: rec.Type})
+	if err != nil {
+		return fmt.Errorf("cloudflare: list %s records %s: %w", rec.Type, rec.Name, err)
+	}
+	if len(mainRecords) > 0 && !owned {
+		return fmt.Errorf("cloudflare: ensure record %s: %w", rec.Name, ErrUnmanagedRecord)
+	}
+	if len(mainRecords) == 0 {
+		if _, err := p.client.CreateDNSRecord(ctx, rc, cf.CreateDNSRecordParams{Type: rec.Type, Name: rec.Name, Content: rec.Value, TTL: 60}); err != nil {
+			return fmt.Errorf("cloudflare: creating %s record %s: %w", rec.Type, rec.Name, err)
+		}
+	} else {
+		if len(mainRecords) > 1 {
+			return fmt.Errorf("cloudflare: ensure record %s: %w: multiple owned records", rec.Name, ErrUnmanagedRecord)
+		}
+		if _, err := p.client.UpdateDNSRecord(ctx, rc, cf.UpdateDNSRecordParams{ID: mainRecords[0].ID, Type: rec.Type, Name: rec.Name, Content: rec.Value}); err != nil {
+			return fmt.Errorf("cloudflare: updating %s record %s: %w", rec.Type, rec.Name, err)
+		}
+	}
+	if owned {
 		return nil
 	}
 	if err := p.ensureSingleRecord(ctx, rc, rec.Name, "TXT", rec.OwnershipTag); err != nil {
@@ -109,6 +161,11 @@ func (p *Provider) ensureSingleRecord(ctx context.Context, rc *cf.ResourceContai
 		return fmt.Errorf("listing existing %s records: %w", recordType, err)
 	}
 
+	for _, record := range existing {
+		if record.Content == content {
+			return nil
+		}
+	}
 	if len(existing) == 0 {
 		_, err := p.client.CreateDNSRecord(ctx, rc, cf.CreateDNSRecordParams{Type: recordType, Name: name, Content: content, TTL: 60})
 		if err != nil {
@@ -117,6 +174,13 @@ func (p *Provider) ensureSingleRecord(ctx context.Context, rc *cf.ResourceContai
 		return nil
 	}
 
+	if recordType == "TXT" {
+		_, err := p.client.CreateDNSRecord(ctx, rc, cf.CreateDNSRecordParams{Type: recordType, Name: name, Content: content, TTL: 60})
+		if err != nil {
+			return fmt.Errorf("creating %s record: %w", recordType, err)
+		}
+		return nil
+	}
 	_, err = p.client.UpdateDNSRecord(ctx, rc, cf.UpdateDNSRecordParams{ID: existing[0].ID, Type: recordType, Name: name, Content: content})
 	if err != nil {
 		return fmt.Errorf("updating %s record: %w", recordType, err)
@@ -164,6 +228,9 @@ func (p *Provider) DeleteRecord(ctx context.Context, rec providerapi.DNSRecord) 
 			return fmt.Errorf("cloudflare: delete record %s: listing record: %w", rec.Name, err)
 		}
 		for _, r := range mainRecords {
+			if r.Content != rec.Value {
+				continue
+			}
 			if err := p.client.DeleteDNSRecord(ctx, rc, r.ID); err != nil {
 				return fmt.Errorf("cloudflare: delete record %s: %w", rec.Name, err)
 			}

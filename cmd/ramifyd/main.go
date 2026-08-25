@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -23,6 +24,7 @@ import (
 	"github.com/khanalsaroj/ramify/internal/api"
 	"github.com/khanalsaroj/ramify/internal/config"
 	"github.com/khanalsaroj/ramify/internal/core"
+	"github.com/khanalsaroj/ramify/internal/metrics"
 	"github.com/khanalsaroj/ramify/internal/store"
 	"github.com/khanalsaroj/ramify/providers/cert/acme"
 	"github.com/khanalsaroj/ramify/providers/deploy/compose"
@@ -97,12 +99,14 @@ func run(configPath string, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("constructing deploy provider: %w", err)
 	}
+	deployProvider.SetCertificateDir(cfg.Deploy.CertificateDir)
 
 	certProvider, err := acme.New(acme.Config{
 		CADirURL:    cfg.ACME.CADirURL,
 		Email:       cfg.ACME.Email,
 		Zone:        cfg.DNS.Zone,
 		DNSProvider: dnsProvider,
+		StorageDir:  acmeStorageDir(cfg),
 	})
 	if err != nil {
 		return fmt.Errorf("constructing acme provider: %w", err)
@@ -115,8 +119,9 @@ func run(configPath string, logger *slog.Logger) error {
 
 	reconciler := core.NewReconciler(st, deployProvider, dnsProvider, certProvider, notifyProvider,
 		core.NewRealClock(), cfg.BaseDomain, cfg.Reaper.DefaultTTL, logger)
-	reaper := core.NewReaper(st, reconciler, core.NewRealClock(), logger)
-	server := api.NewServer(st, reconciler, gitProvider, deployProvider, cfg.BaseDomain, logger)
+	metricSet := &metrics.Metrics{}
+	reaper := core.NewReaper(st, reconciler, core.NewRealClock(), logger, metricSet)
+	server := api.NewServer(st, reconciler, gitProvider, deployProvider, cfg.BaseDomain, logger, metricSet)
 
 	logger.Info("replaying unprocessed events")
 	if err := reconciler.ReplayUnprocessedEvents(ctx); err != nil {
@@ -124,7 +129,7 @@ func run(configPath string, logger *slog.Logger) error {
 	}
 
 	var wg sync.WaitGroup
-	errCh := make(chan error, 2)
+	errCh := make(chan error, 3)
 
 	wg.Go(func() {
 		logger.Info("control api starting", "socket", cfg.Server.SocketPath, "tcp_addr", cfg.Server.TCPAddr)
@@ -137,6 +142,10 @@ func run(configPath string, logger *slog.Logger) error {
 		runReaperLoop(ctx, reaper, cfg.Reaper.Interval, logger)
 	})
 
+	wg.Go(func() {
+		runEventLoop(ctx, st, reconciler, logger, metricSet, cfg.Reaper.EventRetention)
+	})
+
 	wg.Wait()
 	close(errCh)
 
@@ -145,6 +154,42 @@ func run(configPath string, logger *slog.Logger) error {
 		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
+}
+
+func runEventLoop(ctx context.Context, st store.Store, reconciler *core.Reconciler, logger *slog.Logger, metricSet *metrics.Metrics, eventRetention time.Duration) {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	lastPrune := time.Time{}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			now := time.Now().UTC()
+			events, err := st.ListDueEvents(ctx, now, 100)
+			if err != nil {
+				logger.Error("event worker: listing due events failed", "error", err)
+				continue
+			}
+			metricSet.InboxPending.Store(int64(len(events)))
+			if err := reconciler.ReplayEvents(ctx, events); err != nil {
+				logger.Error("event worker: replay failed", "error", err)
+			}
+			if eventRetention > 0 && (lastPrune.IsZero() || now.Sub(lastPrune) >= time.Hour) {
+				if _, err := st.PruneProcessedEvents(ctx, now.Add(-eventRetention), 5000); err != nil {
+					logger.Error("event worker: pruning processed events failed", "error", err)
+				}
+				lastPrune = now
+			}
+		}
+	}
+}
+
+func acmeStorageDir(cfg *config.Config) string {
+	if cfg.ACME.StorageDir != "" {
+		return cfg.ACME.StorageDir
+	}
+	return filepath.Join(filepath.Dir(cfg.Store.Path), "certificates")
 }
 
 func runReaperLoop(ctx context.Context, reaper *core.Reaper, interval time.Duration, logger *slog.Logger) {

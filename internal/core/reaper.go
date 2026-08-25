@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/khanalsaroj/ramify/internal/metrics"
 	"github.com/khanalsaroj/ramify/internal/store"
 )
 
@@ -18,14 +19,19 @@ type Reaper struct {
 	reconciler *Reconciler
 	clock      Clock
 	logger     *slog.Logger
+	metrics    *metrics.Metrics
 }
 
 // NewReaper constructs a Reaper.
-func NewReaper(st store.Store, reconciler *Reconciler, clock Clock, logger *slog.Logger) *Reaper {
+func NewReaper(st store.Store, reconciler *Reconciler, clock Clock, logger *slog.Logger, metricSet ...*metrics.Metrics) *Reaper {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Reaper{store: st, reconciler: reconciler, clock: clock, logger: logger}
+	m := &metrics.Metrics{}
+	if len(metricSet) > 0 && metricSet[0] != nil {
+		m = metricSet[0]
+	}
+	return &Reaper{store: st, reconciler: reconciler, clock: clock, logger: logger, metrics: m}
 }
 
 // Sweep destroys every non-pinned environment whose ttl_expires_at is at or before
@@ -33,8 +39,10 @@ func NewReaper(st store.Store, reconciler *Reconciler, clock Clock, logger *slog
 // destroys as many expired environments as it can and returns a joined error for
 // any that failed, so one failure doesn't block the rest.
 func (r *Reaper) Sweep(ctx context.Context) error {
+	r.metrics.CleanupRuns.Add(1)
 	expired, err := r.store.ListExpiredEnvironments(ctx, r.clock.Now())
 	if err != nil {
+		r.metrics.CleanupFailures.Add(1)
 		return fmt.Errorf("reaper: listing expired environments: %w", err)
 	}
 
@@ -46,6 +54,7 @@ func (r *Reaper) Sweep(ctx context.Context) error {
 		}
 	}
 	if len(errs) > 0 {
+		r.metrics.CleanupFailures.Add(int64(len(errs)))
 		return fmt.Errorf("reaper: sweep: %w", errors.Join(errs...))
 	}
 	return nil

@@ -6,6 +6,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -30,10 +32,15 @@ func Open(ctx context.Context, path string) (Store, error) {
 	// modernc.org/sqlite connections are not safe for concurrent writers; a
 	// single shared connection serializes access and avoids SQLITE_BUSY errors.
 	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 
 	if _, err := db.ExecContext(ctx, `PRAGMA foreign_keys = ON`); err != nil {
 		_ = db.Close() // best-effort cleanup after a failed open
 		return nil, fmt.Errorf("enabling foreign keys on %s: %w", path, err)
+	}
+	if _, err := db.ExecContext(ctx, `PRAGMA busy_timeout = 5000`); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("setting sqlite busy timeout on %s: %w", path, err)
 	}
 	if err := applyMigrations(ctx, db); err != nil {
 		_ = db.Close() // best-effort cleanup after a failed open
@@ -265,10 +272,13 @@ func (s *sqliteStore) CreateEvent(ctx context.Context, ev Event) (Event, error) 
 	}
 	ev.CreatedAt = time.Now().UTC()
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO events (id, environment_id, kind, payload, processed_at, created_at)
-		VALUES (?, ?, ?, ?, ?, ?)`,
-		ev.ID, nullableString(ev.EnvironmentID), ev.Kind, ev.Payload, ev.ProcessedAt, ev.CreatedAt,
+		INSERT INTO events (id, environment_id, kind, dedupe_key, payload, processed_at, created_at, attempts, next_attempt_at, last_error)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		ev.ID, nullableString(ev.EnvironmentID), ev.Kind, nullableString(ev.DedupeKey), ev.Payload, ev.ProcessedAt, ev.CreatedAt, ev.Attempts, ev.NextAttemptAt, ev.LastError,
 	)
+	if isUniqueConstraintErr(err) {
+		return Event{}, fmt.Errorf("creating event %s: %w", ev.Kind, ErrConflict)
+	}
 	if err != nil {
 		return Event{}, fmt.Errorf("creating event %s: %w", ev.Kind, err)
 	}
@@ -278,7 +288,7 @@ func (s *sqliteStore) CreateEvent(ctx context.Context, ev Event) (Event, error) 
 // ListUnprocessedEvents implements Store.
 func (s *sqliteStore) ListUnprocessedEvents(ctx context.Context) ([]Event, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, environment_id, kind, payload, processed_at, created_at
+		SELECT id, environment_id, kind, dedupe_key, payload, processed_at, created_at, attempts, next_attempt_at, last_error
 		FROM events WHERE processed_at IS NULL ORDER BY created_at`)
 	if err != nil {
 		return nil, fmt.Errorf("listing unprocessed events: %w", err)
@@ -290,10 +300,17 @@ func (s *sqliteStore) ListUnprocessedEvents(ctx context.Context) ([]Event, error
 		var ev Event
 		var environmentID sql.NullString
 		var processedAt sql.NullTime
-		if err := rows.Scan(&ev.ID, &environmentID, &ev.Kind, &ev.Payload, &processedAt, &ev.CreatedAt); err != nil {
+		var dedupeKey sql.NullString
+		var nextAttemptAt sql.NullTime
+		if err := rows.Scan(&ev.ID, &environmentID, &ev.Kind, &dedupeKey, &ev.Payload, &processedAt, &ev.CreatedAt, &ev.Attempts, &nextAttemptAt, &ev.LastError); err != nil {
 			return nil, fmt.Errorf("listing unprocessed events: %w", err)
 		}
 		ev.EnvironmentID = environmentID.String
+		ev.DedupeKey = dedupeKey.String
+		if nextAttemptAt.Valid {
+			t := nextAttemptAt.Time
+			ev.NextAttemptAt = &t
+		}
 		if processedAt.Valid {
 			t := processedAt.Time
 			ev.ProcessedAt = &t
@@ -306,6 +323,60 @@ func (s *sqliteStore) ListUnprocessedEvents(ctx context.Context) ([]Event, error
 	return out, nil
 }
 
+// ListDueEvents implements Store.
+func (s *sqliteStore) ListDueEvents(ctx context.Context, now time.Time, limit int) ([]Event, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, environment_id, kind, dedupe_key, payload, processed_at, created_at, attempts, next_attempt_at, last_error
+		FROM events
+		WHERE processed_at IS NULL AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+		ORDER BY created_at LIMIT ?`, now.UTC(), limit)
+	if err != nil {
+		return nil, fmt.Errorf("listing due events: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []Event
+	for rows.Next() {
+		var ev Event
+		var environmentID, dedupeKey sql.NullString
+		var processedAt, nextAttemptAt sql.NullTime
+		if err := rows.Scan(&ev.ID, &environmentID, &ev.Kind, &dedupeKey, &ev.Payload, &processedAt, &ev.CreatedAt, &ev.Attempts, &nextAttemptAt, &ev.LastError); err != nil {
+			return nil, fmt.Errorf("listing due events: %w", err)
+		}
+		ev.EnvironmentID, ev.DedupeKey = environmentID.String, dedupeKey.String
+		if processedAt.Valid {
+			t := processedAt.Time
+			ev.ProcessedAt = &t
+		}
+		if nextAttemptAt.Valid {
+			t := nextAttemptAt.Time
+			ev.NextAttemptAt = &t
+		}
+		out = append(out, ev)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("listing due events: %w", err)
+	}
+	return out, nil
+}
+
+func (s *sqliteStore) ClaimEvent(ctx context.Context, id string, now, leaseUntil time.Time) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE events SET next_attempt_at = ?
+		WHERE id = ? AND processed_at IS NULL
+		  AND (next_attempt_at IS NULL OR next_attempt_at <= ?)`, leaseUntil.UTC(), id, now.UTC())
+	if err != nil {
+		return false, fmt.Errorf("claiming event %s: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("claiming event %s: %w", id, err)
+	}
+	return n == 1, nil
+}
+
 // MarkEventProcessed implements Store.
 func (s *sqliteStore) MarkEventProcessed(ctx context.Context, id string, processedAt time.Time) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE events SET processed_at = ? WHERE id = ?`, processedAt.UTC(), id)
@@ -316,6 +387,64 @@ func (s *sqliteStore) MarkEventProcessed(ctx context.Context, id string, process
 		return fmt.Errorf("marking event %s processed: %w", id, err)
 	} else if n == 0 {
 		return fmt.Errorf("marking event %s processed: %w", id, ErrNotFound)
+	}
+	return nil
+}
+
+func (s *sqliteStore) MarkEventRetry(ctx context.Context, id string, nextAttempt time.Time, lastError string) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE events SET attempts = attempts + 1, next_attempt_at = ?, last_error = ? WHERE id = ? AND processed_at IS NULL`, nextAttempt.UTC(), lastError, id)
+	if err != nil {
+		return fmt.Errorf("marking event %s retryable: %w", id, err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return fmt.Errorf("marking event %s retryable: %w", id, err)
+	} else if n == 0 {
+		return fmt.Errorf("marking event %s retryable: %w", id, ErrNotFound)
+	}
+	return nil
+}
+
+func (s *sqliteStore) PruneProcessedEvents(ctx context.Context, before time.Time, limit int) (int, error) {
+	if limit <= 0 {
+		limit = 5000
+	}
+	res, err := s.db.ExecContext(ctx, `
+		DELETE FROM events
+		WHERE id IN (
+			SELECT id FROM events
+			WHERE processed_at IS NOT NULL AND created_at < ?
+			ORDER BY created_at LIMIT ?
+		)`, before.UTC(), limit)
+	if err != nil {
+		return 0, fmt.Errorf("pruning processed events: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("counting pruned events: %w", err)
+	}
+	return int(n), nil
+}
+
+// Backup implements Store using SQLite's online VACUUM INTO mechanism. The
+// destination must not already exist; this avoids silently overwriting an
+// operator's backup.
+func (s *sqliteStore) Backup(ctx context.Context, path string) error {
+	if strings.TrimSpace(path) == "" {
+		return fmt.Errorf("backing up sqlite database: empty destination path")
+	}
+	if _, err := os.Stat(path); err == nil {
+		return fmt.Errorf("backing up sqlite database: destination already exists: %s", path)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("checking backup destination %s: %w", path, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		return fmt.Errorf("creating backup directory: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `VACUUM INTO ?`, path); err != nil {
+		return fmt.Errorf("backing up sqlite database to %s: %w", path, err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		return fmt.Errorf("securing sqlite backup %s: %w", path, err)
 	}
 	return nil
 }

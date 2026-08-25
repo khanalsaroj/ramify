@@ -4,6 +4,9 @@ package store
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -213,4 +216,51 @@ func TestEventWithoutEnvironment(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, unprocessed, 1)
 	require.Empty(t, unprocessed[0].EnvironmentID)
+}
+
+func TestEventDedupeAndDueRetry(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	ev, err := s.CreateEvent(ctx, Event{Kind: EventKindWebhookReceived, DedupeKey: "delivery-1", Payload: "{}"})
+	require.NoError(t, err)
+	_, err = s.CreateEvent(ctx, Event{Kind: EventKindWebhookReceived, DedupeKey: "delivery-1", Payload: "{}"})
+	require.ErrorIs(t, err, ErrConflict)
+
+	next := time.Now().UTC().Add(-time.Second)
+	require.NoError(t, s.MarkEventRetry(ctx, ev.ID, next, "temporary"))
+	due, err := s.ListDueEvents(ctx, time.Now().UTC(), 10)
+	require.NoError(t, err)
+	require.Len(t, due, 1)
+	require.Equal(t, 1, due[0].Attempts)
+	require.Equal(t, "temporary", due[0].LastError)
+	claimed, err := s.ClaimEvent(ctx, ev.ID, time.Now().UTC(), time.Now().UTC().Add(time.Minute))
+	require.True(t, claimed)
+	claimed, err = s.ClaimEvent(ctx, ev.ID, time.Now().UTC(), time.Now().UTC().Add(time.Minute))
+	require.False(t, claimed)
+}
+
+func TestBackupCreatesPrivateConsistentCopy(t *testing.T) {
+	s := newTestStore(t)
+	path := filepath.Join(t.TempDir(), "backup.db")
+	require.NoError(t, s.Backup(context.Background(), path))
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	if runtime.GOOS != "windows" {
+		require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	}
+	require.NotZero(t, info.Size())
+	require.Error(t, s.Backup(context.Background(), path))
+}
+
+func TestPruneProcessedEvents(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	ev, err := s.CreateEvent(ctx, Event{Kind: "completed", Payload: "{}"})
+	require.NoError(t, err)
+	require.NoError(t, s.MarkEventProcessed(ctx, ev.ID, time.Now().UTC()))
+	count, err := s.PruneProcessedEvents(ctx, time.Now().UTC().Add(time.Second), 10)
+	require.NoError(t, err)
+	require.Equal(t, 1, count)
+	_, err = s.ListUnprocessedEvents(ctx)
+	require.NoError(t, err)
 }

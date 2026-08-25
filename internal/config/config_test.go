@@ -12,17 +12,24 @@ import (
 
 const validYAML = `
 base_domain: preview.example.com
+server:
+  socket_path: /var/run/ramify/ramify.sock
 store:
   path: /var/lib/ramify/ramify.db
 github:
+  token: github-token
   webhook_secret: $TEST_WEBHOOK_SECRET
 deploy:
   ssh_addr: deploy.example.com:22
+  ssh_private_key_path: /etc/ramify/deploy_key
   compose_file: /srv/ramify/docker-compose.yml
+  dns_target: 203.0.113.10
 dns:
   zone: preview.example.com
+  cloudflare_api_token: cloudflare-token
 acme:
   email: ops@example.com
+  ca_dir_url: https://acme.example.test/directory
 `
 
 func writeTempConfig(t *testing.T, contents string) string {

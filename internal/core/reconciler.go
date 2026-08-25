@@ -9,8 +9,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
+	"github.com/khanalsaroj/ramify/internal/core/domain"
 	"github.com/khanalsaroj/ramify/internal/store"
 	"github.com/khanalsaroj/ramify/providers/providerapi"
 )
@@ -41,6 +43,7 @@ type Reconciler struct {
 	defaultTTL time.Duration
 
 	logger *slog.Logger
+	locks  sync.Map // project/branch -> *sync.Mutex
 }
 
 // NewReconciler constructs a Reconciler. All dependencies are passed in explicitly;
@@ -90,6 +93,12 @@ func (r *Reconciler) fqdn(subdomain string) string {
 // unprocessed events via ReplayUnprocessedEvents. Calling Apply twice with the same
 // req is safe: it does not create a duplicate deployment or DNS record.
 func (r *Reconciler) Apply(ctx context.Context, req ApplyRequest) (store.Environment, error) {
+	unlock := r.lock(req.Project, req.Branch)
+	defer unlock()
+	return r.applyLocked(ctx, req)
+}
+
+func (r *Reconciler) applyLocked(ctx context.Context, req ApplyRequest) (store.Environment, error) {
 	env, err := r.upsertPendingEnvironment(ctx, req)
 	if err != nil {
 		return store.Environment{}, fmt.Errorf("reconciler: apply %s/%s: %w", req.Project, req.Branch, err)
@@ -106,11 +115,67 @@ func (r *Reconciler) Apply(ctx context.Context, req ApplyRequest) (store.Environ
 
 	result, applyErr := r.doApply(ctx, env, req)
 
-	if markErr := r.store.MarkEventProcessed(ctx, ev.ID, r.clock.Now()); markErr != nil {
-		r.logger.ErrorContext(ctx, "reconciler: marking apply event processed", "error", markErr, "event_id", ev.ID)
+	if applyErr == nil {
+		if markErr := r.store.MarkEventProcessed(ctx, ev.ID, r.clock.Now()); markErr != nil {
+			r.logger.ErrorContext(ctx, "reconciler: marking apply event processed", "error", markErr, "event_id", ev.ID)
+		}
+	} else {
+		r.scheduleRetry(ctx, ev, applyErr)
+		r.logger.WarnContext(ctx, "reconciler: apply event remains pending for retry", "event_id", ev.ID, "error", applyErr)
 	}
 
 	return result, applyErr
+}
+
+func (r *Reconciler) applyWithoutEvent(ctx context.Context, req ApplyRequest) error {
+	env, err := r.upsertPendingEnvironment(ctx, req)
+	if err != nil {
+		return fmt.Errorf("reconciler: webhook apply: %w", err)
+	}
+	_, err = r.doApply(ctx, env, req)
+	return err
+}
+
+func (r *Reconciler) lock(project, branch string) func() {
+	key := project + "\x00" + branch
+	value, _ := r.locks.LoadOrStore(key, &sync.Mutex{})
+	mu := value.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
+
+// ProcessWebhookEvent applies or destroys the desired environment represented
+// by a durable webhook inbox event.
+func (r *Reconciler) ProcessWebhookEvent(ctx context.Context, ev providerapi.Event) error {
+	switch ev.Kind {
+	case "branch_pushed", "pr_synchronized":
+		subdomain := domain.Normalize(ev.Branch, 63)
+		req := ApplyRequestFromEvent(ev, subdomain)
+		unlock := r.lock(req.Project, req.Branch)
+		defer unlock()
+		return r.applyWithoutEvent(ctx, req)
+	case "pr_closed", "branch_deleted":
+		env, err := r.store.GetEnvironmentByProjectBranch(ctx, ev.Project, ev.Branch)
+		if errors.Is(err, store.ErrNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		unlock := r.lock(env.Project, env.Branch)
+		defer unlock()
+		return r.destroyWithoutEvent(ctx, env)
+	default:
+		return fmt.Errorf("unsupported webhook event kind %q", ev.Kind)
+	}
+}
+
+// markProcessed records successful completion of an event. Failed work must
+// remain pending so startup replay or a later worker can retry it.
+func (r *Reconciler) markProcessed(ctx context.Context, ev store.Event) {
+	if markErr := r.store.MarkEventProcessed(ctx, ev.ID, r.clock.Now()); markErr != nil {
+		r.logger.ErrorContext(ctx, "reconciler: marking apply event processed", "error", markErr, "event_id", ev.ID)
+	}
 }
 
 // upsertPendingEnvironment returns the existing environment for req.Project/Branch,
@@ -199,8 +264,16 @@ func (r *Reconciler) attemptApply(ctx context.Context, env store.Environment, re
 		return env, fmt.Errorf("dns ensure record: %w", err)
 	}
 
-	if _, err := r.cert.EnsureCertificate(ctx, fqdn); err != nil {
+	certRef, err := r.cert.EnsureCertificate(ctx, fqdn)
+	if err != nil {
 		return env, fmt.Errorf("ensure certificate: %w", err)
+	}
+	if installer, ok := r.deploy.(interface {
+		InstallCertificate(context.Context, string, []byte, []byte) error
+	}); ok && len(certRef.CertificatePEM) > 0 && len(certRef.PrivateKeyPEM) > 0 {
+		if err := installer.InstallCertificate(ctx, fqdn, certRef.CertificatePEM, certRef.PrivateKeyPEM); err != nil {
+			return env, fmt.Errorf("install certificate: %w", err)
+		}
 	}
 
 	if err := r.recordDNSRow(ctx, env.ID, rec); err != nil {
@@ -252,6 +325,12 @@ func (r *Reconciler) recordDNSRow(ctx context.Context, environmentID string, rec
 // marked destroyed on a partial failure. Calling Destroy twice on an already-torn-
 // down environment does not error.
 func (r *Reconciler) Destroy(ctx context.Context, env store.Environment) error {
+	unlock := r.lock(env.Project, env.Branch)
+	defer unlock()
+	return r.destroyLocked(ctx, env)
+}
+
+func (r *Reconciler) destroyLocked(ctx context.Context, env store.Environment) error {
 	payload, err := marshalDestroyPayload(env.Project, env.Branch)
 	if err != nil {
 		return fmt.Errorf("reconciler: destroy %s: %w", env.ID, err)
@@ -271,14 +350,32 @@ func (r *Reconciler) Destroy(ctx context.Context, env store.Environment) error {
 
 	destroyErr := r.doDestroy(ctx, env)
 
-	if markErr := r.store.MarkEventProcessed(ctx, ev.ID, r.clock.Now()); markErr != nil {
-		r.logger.ErrorContext(ctx, "reconciler: marking destroy event processed", "error", markErr, "event_id", ev.ID)
+	if destroyErr == nil {
+		r.markProcessed(ctx, ev)
+	} else {
+		r.scheduleRetry(ctx, ev, destroyErr)
+		r.logger.WarnContext(ctx, "reconciler: destroy event remains pending for retry", "event_id", ev.ID, "error", destroyErr)
 	}
 
 	if destroyErr != nil {
 		return fmt.Errorf("reconciler: destroy %s: %w", env.ID, destroyErr)
 	}
 	return nil
+}
+
+// destroyWithoutEvent is used when the durable webhook inbox is the command
+// event. Creating a second nested destroy event would duplicate work and make
+// retry accounting ambiguous.
+func (r *Reconciler) destroyWithoutEvent(ctx context.Context, env store.Environment) error {
+	if env.Status != store.StatusDestroying {
+		env.Status = store.StatusDestroying
+		var err error
+		env, err = r.store.UpdateEnvironment(ctx, env)
+		if err != nil {
+			return fmt.Errorf("marking environment destroying: %w", err)
+		}
+	}
+	return r.doDestroy(ctx, env)
 }
 
 func (r *Reconciler) doDestroy(ctx context.Context, env store.Environment) error {
@@ -290,7 +387,9 @@ func (r *Reconciler) doDestroy(ctx context.Context, env store.Environment) error
 		if err := r.dns.DeleteRecord(ctx, providerapi.DNSRecord{
 			Zone: r.baseDomain, Name: rec.Name, Type: rec.RecordType, Value: rec.Value, OwnershipTag: rec.OwnershipTag,
 		}); err != nil {
-			return fmt.Errorf("deleting dns record %s: %w", rec.Name, err)
+			if !errors.Is(err, providerapi.ErrRecordAlreadyAbsent) {
+				return fmt.Errorf("deleting dns record %s: %w", rec.Name, err)
+			}
 		}
 		if err := r.store.DeleteDNSRecord(ctx, rec.ID); err != nil {
 			return fmt.Errorf("removing dns record row %s: %w", rec.ID, err)
@@ -322,10 +421,16 @@ func (r *Reconciler) doDestroy(ctx context.Context, env store.Environment) error
 // first. Call it once at startup, before serving new events, so a crash
 // mid-reconciliation is recovered.
 func (r *Reconciler) ReplayUnprocessedEvents(ctx context.Context) error {
-	events, err := r.store.ListUnprocessedEvents(ctx)
+	events, err := r.store.ListDueEvents(ctx, r.clock.Now(), 1000)
 	if err != nil {
 		return fmt.Errorf("reconciler: replay: listing unprocessed events: %w", err)
 	}
+	return r.ReplayEvents(ctx, events)
+}
+
+// ReplayEvents processes a supplied batch of due durable events. It is used by
+// startup recovery and the long-running daemon worker.
+func (r *Reconciler) ReplayEvents(ctx context.Context, events []store.Event) error {
 	for _, ev := range events {
 		r.replayOne(ctx, ev)
 	}
@@ -333,6 +438,15 @@ func (r *Reconciler) ReplayUnprocessedEvents(ctx context.Context) error {
 }
 
 func (r *Reconciler) replayOne(ctx context.Context, ev store.Event) {
+	claimed, err := r.store.ClaimEvent(ctx, ev.ID, r.clock.Now(), r.clock.Now().Add(10*time.Minute))
+	if err != nil {
+		r.logger.ErrorContext(ctx, "reconciler: claiming event failed", "error", err, "event_id", ev.ID)
+		return
+	}
+	if !claimed {
+		return
+	}
+	var replayErr error
 	switch ev.Kind {
 	case EventKindApplyRequested:
 		payload, err := unmarshalApplyPayload(ev.Payload)
@@ -346,26 +460,53 @@ func (r *Reconciler) replayOne(ctx context.Context, ev store.Event) {
 			return
 		}
 		req := ApplyRequest(payload)
-		if _, err := r.doApply(ctx, env, req); err != nil {
-			r.logger.ErrorContext(ctx, "reconciler: replay: apply failed", "error", err, "event_id", ev.ID)
-		}
+		unlock := r.lock(req.Project, req.Branch)
+		replayErr = func() error { defer unlock(); _, err := r.doApply(ctx, env, req); return err }()
 	case EventKindDestroyRequested:
 		env, err := r.store.GetEnvironment(ctx, ev.EnvironmentID)
 		if err != nil {
 			r.logger.ErrorContext(ctx, "reconciler: replay: environment missing", "error", err, "event_id", ev.ID)
 			return
 		}
-		if err := r.doDestroy(ctx, env); err != nil {
-			r.logger.ErrorContext(ctx, "reconciler: replay: destroy failed", "error", err, "event_id", ev.ID)
+		unlock := r.lock(env.Project, env.Branch)
+		replayErr = func() error { defer unlock(); return r.doDestroy(ctx, env) }()
+	case EventKindWebhookReceived:
+		webhookEvent, err := UnmarshalWebhookPayload(ev.Payload)
+		if err != nil {
+			replayErr = err
+			break
 		}
+		replayErr = r.ProcessWebhookEvent(ctx, webhookEvent)
 	default:
 		r.logger.WarnContext(ctx, "reconciler: replay: unknown event kind", "kind", ev.Kind, "event_id", ev.ID)
 		return
 	}
 
-	if err := r.store.MarkEventProcessed(ctx, ev.ID, r.clock.Now()); err != nil {
-		r.logger.ErrorContext(ctx, "reconciler: replay: marking event processed", "error", err, "event_id", ev.ID)
+	if replayErr != nil {
+		r.scheduleRetry(ctx, ev, replayErr)
+		r.logger.ErrorContext(ctx, "reconciler: replay failed; event remains pending", "error", replayErr, "event_id", ev.ID)
+		return
 	}
+	r.markProcessed(ctx, ev)
+}
+
+func (r *Reconciler) scheduleRetry(ctx context.Context, ev store.Event, cause error) {
+	delay := retryDelay(ev.Attempts + 1)
+	if err := r.store.MarkEventRetry(ctx, ev.ID, r.clock.Now().Add(delay), cause.Error()); err != nil {
+		r.logger.ErrorContext(ctx, "reconciler: recording retry", "error", err, "event_id", ev.ID)
+	}
+}
+
+func retryDelay(attempt int) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+	const maxDelay = 5 * time.Minute
+	d := time.Duration(1<<uint(min(attempt-1, 8))) * time.Second
+	if d > maxDelay {
+		return maxDelay
+	}
+	return d
 }
 
 // applyBackoff returns the delay before retry attempt n (n >= 2): 1s, 2s, 4s, 8s,

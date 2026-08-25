@@ -193,6 +193,7 @@ func TestFullLifecycle(t *testing.T) {
 		DNSProvider:          dnsProvider,
 		SkipPropagationCheck: true,
 		HTTPClient:           httpClient,
+		StorageDir:           t.TempDir(),
 	})
 	require.NoError(t, err)
 

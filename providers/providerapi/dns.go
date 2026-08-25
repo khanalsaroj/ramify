@@ -2,7 +2,14 @@
 
 package providerapi
 
-import "context"
+import (
+	"context"
+	"errors"
+)
+
+// ErrRecordAlreadyAbsent indicates that the requested record is already gone.
+// Destructive reconciliation should treat this as successful idempotent cleanup.
+var ErrRecordAlreadyAbsent = errors.New("providerapi: dns record already absent")
 
 // DNSRecord is a single DNS record managed by Ramify. Every record Ramify creates
 // carries an OwnershipTag so it can later be safely identified for deletion, in the

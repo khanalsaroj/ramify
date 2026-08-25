@@ -15,23 +15,25 @@ import (
 
 func newInitCmd() *cobra.Command {
 	var (
-		output              string
-		baseDomain          string
-		socketPath          string
-		storePath           string
-		reaperDefaultTTL    time.Duration
-		githubToken         string
-		githubWebhookSecret string
-		deploySSHAddr       string
-		deploySSHUser       string
-		deploySSHKeyPath    string
-		deploySSHKnownHosts string
-		deployComposeFile   string
-		deployDNSTarget     string
-		dnsZone             string
-		cloudflareAPIToken  string
-		acmeEmail           string
-		acmeCADirURL        string
+		output               string
+		baseDomain           string
+		socketPath           string
+		storePath            string
+		reaperDefaultTTL     time.Duration
+		eventRetention       time.Duration
+		githubToken          string
+		githubWebhookSecret  string
+		deploySSHAddr        string
+		deploySSHUser        string
+		deploySSHKeyPath     string
+		deploySSHKnownHosts  string
+		deployComposeFile    string
+		deployDNSTarget      string
+		deployCertificateDir string
+		dnsZone              string
+		cloudflareAPIToken   string
+		acmeEmail            string
+		acmeCADirURL         string
 	)
 
 	cmd := &cobra.Command{
@@ -45,11 +47,11 @@ func newInitCmd() *cobra.Command {
 				BaseDomain: baseDomain,
 				Server:     config.ServerConfig{SocketPath: socketPath},
 				Store:      config.StoreConfig{Path: storePath},
-				Reaper:     config.ReaperConfig{Interval: 5 * time.Minute, DefaultTTL: reaperDefaultTTL},
+				Reaper:     config.ReaperConfig{Interval: 5 * time.Minute, DefaultTTL: reaperDefaultTTL, EventRetention: eventRetention},
 				GitHub:     config.GitHubConfig{Token: githubToken, WebhookSecret: githubWebhookSecret},
 				Deploy: config.DeployConfig{
 					SSHAddr: deploySSHAddr, SSHUser: deploySSHUser, SSHPrivateKeyPath: deploySSHKeyPath,
-					SSHKnownHostsPath: deploySSHKnownHosts, ComposeFile: deployComposeFile, DNSTarget: deployDNSTarget,
+					SSHKnownHostsPath: deploySSHKnownHosts, ComposeFile: deployComposeFile, DNSTarget: deployDNSTarget, CertificateDir: deployCertificateDir,
 				},
 				DNS:  config.DNSConfig{Zone: dnsZone, CloudflareAPIToken: cloudflareAPIToken},
 				ACME: config.ACMEConfig{Email: acmeEmail, CADirURL: acmeCADirURL},
@@ -77,6 +79,7 @@ func newInitCmd() *cobra.Command {
 	cmd.Flags().StringVar(&socketPath, "socket-path", defaultSocketPath, "control API unix socket path")
 	cmd.Flags().StringVar(&storePath, "store-path", "/var/lib/ramify/ramify.db", "state database path")
 	cmd.Flags().DurationVar(&reaperDefaultTTL, "default-ttl", 72*time.Hour, "TTL applied to a new environment")
+	cmd.Flags().DurationVar(&eventRetention, "event-retention", 720*time.Hour, "retention for completed event history")
 	cmd.Flags().StringVar(&githubToken, "github-token", "", "GitHub token used to post PR comments")
 	cmd.Flags().StringVar(&githubWebhookSecret, "github-webhook-secret", "", "GitHub webhook HMAC secret (required)")
 	cmd.Flags().StringVar(&deploySSHAddr, "deploy-ssh-addr", "", "deploy host SSH address, host:port (required)")
@@ -85,6 +88,7 @@ func newInitCmd() *cobra.Command {
 	cmd.Flags().StringVar(&deploySSHKnownHosts, "deploy-ssh-known-hosts", "", "path to a known_hosts file verifying the deploy host's key")
 	cmd.Flags().StringVar(&deployComposeFile, "deploy-compose-file", "", "path to docker-compose.yml on the deploy host (required)")
 	cmd.Flags().StringVar(&deployDNSTarget, "deploy-dns-target", "", "address DNS records should point to")
+	cmd.Flags().StringVar(&deployCertificateDir, "deploy-certificate-dir", "", "remote directory for installed TLS certificate material")
 	cmd.Flags().StringVar(&dnsZone, "dns-zone", "", "Cloudflare DNS zone (required)")
 	cmd.Flags().StringVar(&cloudflareAPIToken, "cloudflare-token", "", "Cloudflare API token")
 	cmd.Flags().StringVar(&acmeEmail, "acme-email", "", "contact email for the ACME account (required)")

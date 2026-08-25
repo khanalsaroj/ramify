@@ -24,6 +24,7 @@ reaper:
   interval: 5m
   # TTL applied to a new environment unless overridden per-environment.
   default_ttl: 72h
+  event_retention: 720h
 
 github:
   # A GitHub personal access token or installation token with repo + pull_request
@@ -44,6 +45,8 @@ deploy:
   # reverse proxy on that host is expected to route by Host header to the right
   # compose service.
   dns_target: 203.0.113.10
+  # Optional remote directory mounted/read by the reverse proxy for TLS files.
+  certificate_dir: /srv/ramify/certificates
 
 dns:
   zone: preview.example.com
@@ -51,6 +54,7 @@ dns:
 
 acme:
   email: ops@example.com
+  storage_dir: /var/lib/ramify/certificates
   # Let's Encrypt production directory. Use
   # https://acme-staging-v02.api.letsencrypt.org/directory while testing to avoid
   # production rate limits.

@@ -42,8 +42,9 @@ type StoreConfig struct {
 
 // ReaperConfig configures TTL-based environment expiry.
 type ReaperConfig struct {
-	Interval   time.Duration `yaml:"interval"`
-	DefaultTTL time.Duration `yaml:"default_ttl"`
+	Interval       time.Duration `yaml:"interval"`
+	DefaultTTL     time.Duration `yaml:"default_ttl"`
+	EventRetention time.Duration `yaml:"event_retention"`
 }
 
 // GitHubConfig configures providers/git/github.
@@ -64,6 +65,7 @@ type DeployConfig struct {
 	SSHKnownHostsPath string `yaml:"ssh_known_hosts_path,omitempty"`
 	ComposeFile       string `yaml:"compose_file"`
 	DNSTarget         string `yaml:"dns_target"`
+	CertificateDir    string `yaml:"certificate_dir,omitempty"`
 }
 
 // DNSConfig configures providers/dns/cloudflare.
@@ -74,8 +76,9 @@ type DNSConfig struct {
 
 // ACMEConfig configures providers/cert/acme.
 type ACMEConfig struct {
-	Email    string `yaml:"email"`
-	CADirURL string `yaml:"ca_dir_url"`
+	Email      string `yaml:"email"`
+	CADirURL   string `yaml:"ca_dir_url"`
+	StorageDir string `yaml:"storage_dir"`
 }
 
 // NotifyConfig configures providers/notify/githubcomment. CommentTemplates maps a
@@ -163,6 +166,15 @@ func (c Config) Validate() error {
 	if c.Store.Path == "" {
 		missing = append(missing, "store.path")
 	}
+	if c.Server.SocketPath == "" {
+		missing = append(missing, "server.socket_path")
+	}
+	if c.Server.TCPAddr != "" && c.Server.TCPToken == "" {
+		missing = append(missing, "server.tcp_token (required when server.tcp_addr is set)")
+	}
+	if c.GitHub.Token == "" {
+		missing = append(missing, "github.token")
+	}
 	if c.GitHub.WebhookSecret == "" {
 		missing = append(missing, "github.webhook_secret")
 	}
@@ -172,11 +184,23 @@ func (c Config) Validate() error {
 	if c.Deploy.ComposeFile == "" {
 		missing = append(missing, "deploy.compose_file")
 	}
+	if c.Deploy.SSHPrivateKeyPath == "" {
+		missing = append(missing, "deploy.ssh_private_key_path")
+	}
+	if c.Deploy.DNSTarget == "" {
+		missing = append(missing, "deploy.dns_target")
+	}
 	if c.DNS.Zone == "" {
 		missing = append(missing, "dns.zone")
 	}
+	if c.DNS.CloudflareAPIToken == "" {
+		missing = append(missing, "dns.cloudflare_api_token")
+	}
 	if c.ACME.Email == "" {
 		missing = append(missing, "acme.email")
+	}
+	if c.ACME.CADirURL == "" {
+		missing = append(missing, "acme.ca_dir_url")
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("missing required fields: %s", strings.Join(missing, ", "))

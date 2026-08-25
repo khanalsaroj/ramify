@@ -227,6 +227,29 @@ func TestReplayUnprocessedEventsRecoversCrashedDestroy(t *testing.T) {
 	require.Equal(t, store.StatusDestroyed, final.Status)
 }
 
+func TestReplayFailureRemainsPendingAndSchedulesRetry(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.deploy.ApplyErr = errors.New("temporary provider outage")
+
+	env, err := h.store.CreateEnvironment(ctx, store.Environment{
+		Project: "acme/web", Branch: "feature-x", Subdomain: "feature-x", ArtifactRef: "ref1", Status: store.StatusPending,
+	})
+	require.NoError(t, err)
+	payload, err := marshalApplyPayload(ApplyRequest{Project: "acme/web", Branch: "feature-x", Subdomain: "feature-x", ArtifactRef: "ref1"})
+	require.NoError(t, err)
+	_, err = h.store.CreateEvent(ctx, store.Event{EnvironmentID: env.ID, Kind: EventKindApplyRequested, Payload: payload})
+	require.NoError(t, err)
+
+	require.NoError(t, h.rec.ReplayUnprocessedEvents(ctx))
+	events, err := h.store.ListUnprocessedEvents(ctx)
+	require.NoError(t, err)
+	require.Len(t, events, 1, "failed replay must remain durable")
+	require.Equal(t, 1, events[0].Attempts)
+	require.NotNil(t, events[0].NextAttemptAt)
+	require.Contains(t, events[0].LastError, "temporary provider outage")
+}
+
 func TestApplySetsAndRefreshesTTLWhenConfigured(t *testing.T) {
 	h := newHarness(t)
 	rec := NewReconciler(h.store, h.deploy, h.dns, h.cert, h.notify, h.clock, "preview.example.com", 24*time.Hour, nil)

@@ -31,6 +31,10 @@ type Provider struct {
 	templates map[string]*template.Template
 }
 
+type previewCommentUpdater interface {
+	UpsertPreviewComment(ctx context.Context, project string, prNumber int, body string) error
+}
+
 var _ providerapi.NotifierProvider = (*Provider)(nil)
 
 // New constructs a Provider. overrides maps a NotifyEvent.Kind to a custom
@@ -72,6 +76,12 @@ func (p *Provider) Notify(ctx context.Context, project string, prNumber int, ev 
 		return fmt.Errorf("githubcomment: rendering template for %q: %w", ev.Kind, err)
 	}
 
+	if updater, ok := p.git.(previewCommentUpdater); ok {
+		if err := updater.UpsertPreviewComment(ctx, project, prNumber, buf.String()); err != nil {
+			return fmt.Errorf("githubcomment: notify %s#%d: %w", project, prNumber, err)
+		}
+		return nil
+	}
 	if err := p.git.CommentOnPR(ctx, project, prNumber, buf.String()); err != nil {
 		return fmt.Errorf("githubcomment: notify %s#%d: %w", project, prNumber, err)
 	}
