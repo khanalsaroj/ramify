@@ -3,6 +3,10 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+      - scripts/**
   pull_request:
 
 permissions:
@@ -72,6 +76,20 @@ jobs:
           version: v2.13.1
           args: --build-tags=e2e
           only-new-issues: true
+
+  security:
+    name: Dependency and module security
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "stable"
+          cache: true
+      - name: Verify module checksums
+        run: go mod verify
+      - name: Vulnerability scan
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
   build:
     name: Cross-compile
