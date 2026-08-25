@@ -478,10 +478,12 @@ ssh-keyscan -t ed25519 YOUR_VPS_IP &gt;&gt; /etc/ramify/known_hosts</code></pre>
       <div class="qs-item">
         <h4><span class="num">04</span> Put a Compose file on the VPS</h4>
         <p>Ramify runs <code>docker compose -f &lt;path&gt; up -d</code> with <code>IMAGE_TAG</code> and
-        <code>COMPOSE_PROJECT_NAME</code> set per environment, e.g. <code>/srv/ramify/docker-compose.yml</code>:</p>
+        <code>COMPOSE_PROJECT_NAME</code> set per environment, e.g. <code>/srv/ramify/docker-compose.yml</code>.
+        <code>IMAGE_TAG</code> is the head commit SHA, not a full image reference — interpolate it into one
+        your registry can resolve. Ramify never builds the image; your CI must have pushed it already:</p>
         <pre><code>services:
   app:
-    image: ${IMAGE_TAG}
+    image: ghcr.io/OWNER/REPO:${IMAGE_TAG}
     restart: unless-stopped
     # point your reverse proxy (Traefik/Caddy) at this service by hostname —
     # Ramify only points DNS at the VPS's own address, routing is your proxy's job</code></pre>

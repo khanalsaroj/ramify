@@ -84,12 +84,16 @@ ssh-keyscan -t ed25519 YOUR_VPS_IP >> /etc/ramify/known_hosts
 
 Ramify runs `docker compose -f <path> up -d` with `IMAGE_TAG` and
 `COMPOSE_PROJECT_NAME` set per environment — write the Compose file that
-describes how your app runs, e.g. `/srv/ramify/docker-compose.yml` on the VPS:
+describes how your app runs, e.g. `/srv/ramify/docker-compose.yml` on the VPS.
+
+`IMAGE_TAG` is the head commit SHA of the branch being deployed, not a full
+image reference, so interpolate it into one your registry can resolve. Ramify
+never builds the image — your CI must have pushed it for that SHA already:
 
 ```yaml
 services:
   app:
-    image: ${IMAGE_TAG}
+    image: ghcr.io/OWNER/REPO:${IMAGE_TAG}
     restart: unless-stopped
     # expose whatever port your reverse proxy on the VPS routes to; Ramify only
     # points DNS at the VPS's own address (deploy.dns_target below) — routing
