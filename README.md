@@ -65,6 +65,7 @@ This README is the map. Everything else lives in one of these:
 | **[Documentation site](docs/index.html)** | Overview, architecture, install, quickstart, CLI reference, config reference, FAQ — one page. Serve it with GitHub Pages (see below) or open the file directly. |
 | **[`docs/quickstart.md`](docs/quickstart.md)** | Zero to a working setup against a real GitHub repo, Cloudflare zone, and VPS — every command verified against a real generated config. |
 | **[`docs/providers.md`](docs/providers.md)** | The provider architecture, the shared contract test suites, and how to run them against a real account instead of the in-memory fakes CI uses. |
+| **[`skills/ramify/SKILL.md`](skills/ramify/SKILL.md)** | An operating manual packaged for agentic coding CLIs. Copy into `.claude/skills/` for Claude Code, or reference it from `AGENTS.md` for Codex and friends. |
 | **[`test/e2e/`](test/e2e/)** | Docker-based end-to-end harness — Pebble as a local ACME CA, CoreDNS, a fake SSH target, a mock GitHub API. Runs as a gating CI job. |
 | **[`CONTRIBUTING.md`](CONTRIBUTING.md)** | Dev setup, required checks, commit style. |
 | **[`docs/operations.md`](docs/operations.md)** | Health, metrics, backups, durable event processing, and production security. |
