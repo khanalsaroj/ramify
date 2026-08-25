@@ -119,10 +119,13 @@ jobs:
     needs: [test, lint]
     steps:
       - uses: actions/checkout@v7
+      # `run`, not `up --abort-on-container-exit`: zones-init is a one-shot
+      # container whose immediate exit would abort the stack before the tests ran.
       - name: Run e2e harness
-        run: |
-          docker compose -f test/e2e/docker-compose.dev.yml up \
-            --build --abort-on-container-exit --exit-code-from test-runner
+        run: docker compose -f test/e2e/docker-compose.dev.yml run --build --rm test-runner
       - name: Show service logs on failure
         if: failure()
         run: docker compose -f test/e2e/docker-compose.dev.yml logs
+      - name: Tear down
+        if: always()
+        run: docker compose -f test/e2e/docker-compose.dev.yml down --volumes
