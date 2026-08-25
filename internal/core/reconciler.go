@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"sync"
 	"time"
 
@@ -20,6 +21,12 @@ import (
 // maxApplyAttempts is the maximum number of times Apply tries the deploy/DNS/cert
 // sequence before giving up and marking the environment failed.
 const maxApplyAttempts = 5
+
+// maxEventAttempts caps durable retries of a single inbox event. Past this the
+// event is dead-lettered rather than retried forever, so a permanently broken
+// event cannot occupy the worker indefinitely or hide behind an ever-growing
+// backoff.
+const maxEventAttempts = 10
 
 // Reconciler drives preview environments toward their desired state using the
 // providerapi interfaces. It never executes a build: DeployProvider.Apply only ever
@@ -44,6 +51,10 @@ type Reconciler struct {
 
 	logger *slog.Logger
 	locks  sync.Map // project/branch -> *sync.Mutex
+
+	// jitter randomizes a computed retry delay. It is a field so tests can make
+	// backoff deterministic; production uses fullJitter.
+	jitter func(time.Duration) time.Duration
 }
 
 // NewReconciler constructs a Reconciler. All dependencies are passed in explicitly;
@@ -72,6 +83,7 @@ func NewReconciler(
 		baseDomain: baseDomain,
 		defaultTTL: defaultTTL,
 		logger:     logger,
+		jitter:     fullJitter,
 	}
 }
 
@@ -451,13 +463,15 @@ func (r *Reconciler) replayOne(ctx context.Context, ev store.Event) {
 	case EventKindApplyRequested:
 		payload, err := unmarshalApplyPayload(ev.Payload)
 		if err != nil {
-			r.logger.ErrorContext(ctx, "reconciler: replay: bad apply payload", "error", err, "event_id", ev.ID)
+			// A payload that will not parse now will not parse later; retrying
+			// would leave it pending forever.
+			r.scheduleRetry(ctx, ev, Terminal(fmt.Errorf("replay: bad apply payload: %w", err)))
 			return
 		}
 		env, err := r.store.GetEnvironment(ctx, ev.EnvironmentID)
 		if err != nil {
-			r.logger.ErrorContext(ctx, "reconciler: replay: environment missing", "error", err, "event_id", ev.ID)
-			return
+			replayErr = r.classifyLookup(err, "replay: apply: loading environment")
+			break
 		}
 		req := ApplyRequest(payload)
 		unlock := r.lock(req.Project, req.Branch)
@@ -465,20 +479,21 @@ func (r *Reconciler) replayOne(ctx context.Context, ev store.Event) {
 	case EventKindDestroyRequested:
 		env, err := r.store.GetEnvironment(ctx, ev.EnvironmentID)
 		if err != nil {
-			r.logger.ErrorContext(ctx, "reconciler: replay: environment missing", "error", err, "event_id", ev.ID)
-			return
+			replayErr = r.classifyLookup(err, "replay: destroy: loading environment")
+			break
 		}
 		unlock := r.lock(env.Project, env.Branch)
 		replayErr = func() error { defer unlock(); return r.doDestroy(ctx, env) }()
 	case EventKindWebhookReceived:
 		webhookEvent, err := UnmarshalWebhookPayload(ev.Payload)
 		if err != nil {
-			replayErr = err
+			replayErr = Terminal(fmt.Errorf("replay: bad webhook payload: %w", err))
 			break
 		}
 		replayErr = r.ProcessWebhookEvent(ctx, webhookEvent)
 	default:
-		r.logger.WarnContext(ctx, "reconciler: replay: unknown event kind", "kind", ev.Kind, "event_id", ev.ID)
+		// An unknown kind is a code/data mismatch no retry can resolve.
+		r.scheduleRetry(ctx, ev, Terminal(fmt.Errorf("replay: unknown event kind %q", ev.Kind)))
 		return
 	}
 
@@ -490,13 +505,43 @@ func (r *Reconciler) replayOne(ctx context.Context, ev store.Event) {
 	r.markProcessed(ctx, ev)
 }
 
+// classifyLookup wraps an environment lookup failure, marking it terminal when
+// the row is simply gone: an event referencing a deleted environment can never
+// succeed, while any other store error may be transient.
+func (r *Reconciler) classifyLookup(err error, op string) error {
+	wrapped := fmt.Errorf("%s: %w", op, err)
+	if errors.Is(err, store.ErrNotFound) {
+		return Terminal(wrapped)
+	}
+	return wrapped
+}
+
+// scheduleRetry records a failed attempt. Permanent failures and events that
+// have exhausted their attempt budget are dead-lettered instead of rescheduled,
+// so the retry set only ever holds work that could still succeed.
 func (r *Reconciler) scheduleRetry(ctx context.Context, ev store.Event, cause error) {
-	delay := retryDelay(ev.Attempts + 1)
+	attempt := ev.Attempts + 1
+	if terminal := IsTerminal(cause); terminal || attempt >= maxEventAttempts {
+		reason := "attempts exhausted"
+		if terminal {
+			reason = "permanent failure"
+		}
+		if err := r.store.MarkEventDeadLettered(ctx, ev.ID, r.clock.Now(), cause.Error()); err != nil {
+			r.logger.ErrorContext(ctx, "reconciler: dead-lettering event", "error", err, "event_id", ev.ID)
+			return
+		}
+		r.logger.ErrorContext(ctx, "reconciler: event dead-lettered; operator action required",
+			"reason", reason, "cause", cause, "event_id", ev.ID, "kind", ev.Kind, "attempts", attempt)
+		return
+	}
+
+	delay := r.jitter(retryDelay(attempt))
 	if err := r.store.MarkEventRetry(ctx, ev.ID, r.clock.Now().Add(delay), cause.Error()); err != nil {
 		r.logger.ErrorContext(ctx, "reconciler: recording retry", "error", err, "event_id", ev.ID)
 	}
 }
 
+// retryDelay returns the un-jittered backoff for the given attempt number.
 func retryDelay(attempt int) time.Duration {
 	if attempt < 1 {
 		attempt = 1
@@ -507,6 +552,19 @@ func retryDelay(attempt int) time.Duration {
 		return maxDelay
 	}
 	return d
+}
+
+// fullJitter picks a delay uniformly from [d/2, d]. Without it every event that
+// failed against the same downed provider retries at the same instant, so the
+// provider is hit by the whole backlog at once each time it comes back —
+// exactly the retry storm the backoff is meant to prevent. The floor of d/2
+// keeps the backoff curve meaningful instead of collapsing toward zero.
+func fullJitter(d time.Duration) time.Duration {
+	if d <= 0 {
+		return 0
+	}
+	half := d / 2
+	return half + time.Duration(rand.Int64N(int64(d-half)+1))
 }
 
 // applyBackoff returns the delay before retry attempt n (n >= 2): 1s, 2s, 4s, 8s,

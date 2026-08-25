@@ -19,12 +19,15 @@ import (
 )
 
 // ErrOwnershipMismatch is returned by DeleteRecord when no TXT record at the given
-// name carries a matching OwnershipTag.
-var ErrOwnershipMismatch = errors.New("cloudflare: ownership tag mismatch, refusing delete")
+// name carries a matching OwnershipTag. It is permanent: the record belongs to
+// someone else, and retrying will never make deleting it safe.
+var ErrOwnershipMismatch = providerapi.Permanent(errors.New("cloudflare: ownership tag mismatch, refusing delete"))
 
 // ErrUnmanagedRecord indicates that a record already exists at a name but is
-// not owned by the Ramify instance attempting to manage it.
-var ErrUnmanagedRecord = errors.New("cloudflare: unmanaged record collision")
+// not owned by the Ramify instance attempting to manage it. Permanent for the
+// same reason as ErrOwnershipMismatch: only an operator can resolve the
+// collision.
+var ErrUnmanagedRecord = providerapi.Permanent(errors.New("cloudflare: unmanaged record collision"))
 
 // dnsClient is the subset of *cloudflare.API used by Provider, narrowed to an
 // interface so tests can substitute an in-memory fake instead of making real API

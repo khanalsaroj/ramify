@@ -74,6 +74,11 @@ func TestUpdateEnvironment(t *testing.T) {
 	created, err := s.CreateEnvironment(ctx, Environment{Project: "acme/web", Branch: "main", Subdomain: "main", ArtifactRef: "ref1", Status: StatusPending})
 	require.NoError(t, err)
 
+	// Follow the real lifecycle: an environment reaches ready via deploying.
+	created.Status = StatusDeploying
+	created, err = s.UpdateEnvironment(ctx, created)
+	require.NoError(t, err)
+
 	created.Status = StatusReady
 	created.ArtifactRef = "ref2"
 	created.DeployRef = "deploy-1"
@@ -100,7 +105,7 @@ func TestListEnvironments(t *testing.T) {
 	_, err = s.CreateEnvironment(ctx, Environment{Project: "acme/web", Branch: "b", Subdomain: "b", ArtifactRef: "r", Status: StatusPending})
 	require.NoError(t, err)
 
-	all, err := s.ListEnvironments(ctx)
+	all, err := s.ListEnvironments(ctx, ListOptions{})
 	require.NoError(t, err)
 	require.Len(t, all, 2)
 }

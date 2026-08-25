@@ -172,6 +172,11 @@ func runEventLoop(ctx context.Context, st store.Store, reconciler *core.Reconcil
 				continue
 			}
 			metricSet.InboxPending.Store(int64(len(events)))
+			if dead, err := st.CountDeadLetteredEvents(ctx); err != nil {
+				logger.Error("event worker: counting dead-lettered events failed", "error", err)
+			} else {
+				metricSet.DeadLettered.Store(int64(dead))
+			}
 			if err := reconciler.ReplayEvents(ctx, events); err != nil {
 				logger.Error("event worker: replay failed", "error", err)
 			}

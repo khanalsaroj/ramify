@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"time"
 )
 
@@ -115,9 +116,17 @@ type environment struct {
 	UpdatedAt    string  `json:"UpdatedAt"`
 }
 
+// maxListPages bounds auto-pagination so a server that keeps advertising a next
+// page can never spin the CLI forever.
+const maxListPages = 1000
+
+// listEnvironments walks every page the API offers, so callers still see the
+// complete list even though the endpoint is now paginated. The server signals a
+// further page with X-Ramify-Next-Offset and omits the header on the last one.
 func (c *apiClient) listEnvironments(ctx context.Context, project, branch string) ([]environment, error) {
-	path := "/environments/"
-	if project != "" || branch != "" {
+	var all []environment
+	offset := 0
+	for page := 0; page < maxListPages; page++ {
 		q := make(url.Values)
 		if project != "" {
 			q.Set("project", project)
@@ -125,13 +134,30 @@ func (c *apiClient) listEnvironments(ctx context.Context, project, branch string
 		if branch != "" {
 			q.Set("branch", branch)
 		}
-		path += "?" + q.Encode()
+		if offset > 0 {
+			q.Set("offset", strconv.Itoa(offset))
+		}
+		path := "/environments/"
+		if len(q) > 0 {
+			path += "?" + q.Encode()
+		}
+
+		var envs []environment
+		resp, err := c.do(ctx, http.MethodGet, path, nil, &envs)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, envs...)
+
+		next := resp.Header.Get("X-Ramify-Next-Offset")
+		if next == "" {
+			return all, nil
+		}
+		if offset, err = strconv.Atoi(next); err != nil {
+			return nil, fmt.Errorf("listing environments: bad next-offset %q: %w", next, err)
+		}
 	}
-	var envs []environment
-	if _, err := c.do(ctx, http.MethodGet, path, nil, &envs); err != nil {
-		return nil, err
-	}
-	return envs, nil
+	return nil, fmt.Errorf("listing environments: exceeded %d pages", maxListPages)
 }
 
 func (c *apiClient) getEnvironment(ctx context.Context, id string) (environment, error) {

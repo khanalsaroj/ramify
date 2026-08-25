@@ -22,6 +22,10 @@ type Metrics struct {
 	CleanupRuns            atomic.Int64
 	CleanupFailures        atomic.Int64
 	InboxPending           atomic.Int64
+	// DeadLettered counts events retired without succeeding. A non-zero value
+	// means work was dropped and needs an operator, so it is the counter worth
+	// alerting on.
+	DeadLettered atomic.Int64
 }
 
 // WritePrometheus writes the current counters in Prometheus exposition format.
@@ -45,6 +49,18 @@ func (m *Metrics) WritePrometheus(w io.Writer) error {
 			return err
 		}
 	}
-	_, err := fmt.Fprintf(w, "# HELP ramify_inbox_pending Durable webhook inbox events pending processing\n# TYPE ramify_inbox_pending gauge\nramify_inbox_pending %d\n", m.InboxPending.Load())
-	return err
+	gauges := []struct {
+		name  string
+		help  string
+		value int64
+	}{
+		{"ramify_inbox_pending", "Durable webhook inbox events pending processing", m.InboxPending.Load()},
+		{"ramify_events_dead_lettered", "Events retired without succeeding; requires operator attention", m.DeadLettered.Load()},
+	}
+	for _, gauge := range gauges {
+		if _, err := fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s gauge\n%s %d\n", gauge.name, gauge.help, gauge.name, gauge.name, gauge.value); err != nil {
+			return err
+		}
+	}
+	return nil
 }

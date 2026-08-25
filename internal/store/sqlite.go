@@ -5,6 +5,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -93,7 +94,27 @@ func (s *sqliteStore) CreateEnvironment(ctx context.Context, env Environment) (E
 // UpdateEnvironment implements Store.
 func (s *sqliteStore) UpdateEnvironment(ctx context.Context, env Environment) (Environment, error) {
 	env.UpdatedAt = time.Now().UTC()
-	res, err := s.db.ExecContext(ctx, `
+
+	// Read the current status and write the new row in one transaction so the
+	// transition check cannot race a concurrent update.
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Environment{}, fmt.Errorf("updating environment %s: %w", env.ID, err)
+	}
+	defer func() { _ = tx.Rollback() }() // no-op once the transaction commits
+
+	var current string
+	switch err := tx.QueryRowContext(ctx, `SELECT status FROM environments WHERE id = ?`, env.ID).Scan(&current); {
+	case errors.Is(err, sql.ErrNoRows):
+		return Environment{}, fmt.Errorf("updating environment %s: %w", env.ID, ErrNotFound)
+	case err != nil:
+		return Environment{}, fmt.Errorf("updating environment %s: %w", env.ID, err)
+	}
+	if err := validateTransition(current, env.Status); err != nil {
+		return Environment{}, fmt.Errorf("updating environment %s: %w", env.ID, err)
+	}
+
+	res, err := tx.ExecContext(ctx, `
 		UPDATE environments SET
 			project = ?, branch = ?, pr_number = ?, subdomain = ?, artifact_ref = ?,
 			deploy_ref = ?, status = ?, pinned = ?, ttl_expires_at = ?, updated_at = ?
@@ -111,6 +132,9 @@ func (s *sqliteStore) UpdateEnvironment(ctx context.Context, env Environment) (E
 		return Environment{}, fmt.Errorf("checking update result for environment %s: %w", env.ID, err)
 	} else if n == 0 {
 		return Environment{}, fmt.Errorf("updating environment %s: %w", env.ID, ErrNotFound)
+	}
+	if err := tx.Commit(); err != nil {
+		return Environment{}, fmt.Errorf("updating environment %s: %w", env.ID, err)
 	}
 	return s.GetEnvironment(ctx, env.ID)
 }
@@ -162,9 +186,33 @@ func (s *sqliteStore) GetEnvironmentByProjectBranch(ctx context.Context, project
 	return env, nil
 }
 
-// ListEnvironments implements Store.
-func (s *sqliteStore) ListEnvironments(ctx context.Context) ([]Environment, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+environmentColumns+` FROM environments ORDER BY created_at`)
+// ListEnvironments implements Store. Filtering and the page window are pushed
+// into SQL so a large deployment never loads every row into memory.
+func (s *sqliteStore) ListEnvironments(ctx context.Context, opts ListOptions) ([]Environment, error) {
+	opts = opts.normalized()
+
+	query := `SELECT ` + environmentColumns + ` FROM environments`
+	var (
+		where []string
+		args  []any
+	)
+	if opts.Project != "" {
+		where = append(where, `project = ?`)
+		args = append(args, opts.Project)
+	}
+	if opts.Branch != "" {
+		where = append(where, `branch = ?`)
+		args = append(args, opts.Branch)
+	}
+	if len(where) > 0 {
+		query += ` WHERE ` + strings.Join(where, ` AND `)
+	}
+	// created_at alone is not unique enough to page over deterministically; id
+	// breaks ties so a row is never skipped or repeated across pages.
+	query += ` ORDER BY created_at, id LIMIT ? OFFSET ?`
+	args = append(args, opts.Limit, opts.Offset)
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("listing environments: %w", err)
 	}
@@ -285,42 +333,66 @@ func (s *sqliteStore) CreateEvent(ctx context.Context, ev Event) (Event, error) 
 	return ev, nil
 }
 
-// ListUnprocessedEvents implements Store.
-func (s *sqliteStore) ListUnprocessedEvents(ctx context.Context) ([]Event, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, environment_id, kind, dedupe_key, payload, processed_at, created_at, attempts, next_attempt_at, last_error
-		FROM events WHERE processed_at IS NULL ORDER BY created_at`)
-	if err != nil {
-		return nil, fmt.Errorf("listing unprocessed events: %w", err)
+// eventColumns is the column list backing scanEvent.
+const eventColumns = `id, environment_id, kind, dedupe_key, payload, processed_at,
+	created_at, attempts, next_attempt_at, last_error, dead_lettered_at`
+
+// scanEvent reads one row selected with eventColumns.
+func scanEvent(row interface{ Scan(...any) error }) (Event, error) {
+	var ev Event
+	var environmentID, dedupeKey sql.NullString
+	var processedAt, nextAttemptAt, deadLetteredAt sql.NullTime
+	if err := row.Scan(
+		&ev.ID, &environmentID, &ev.Kind, &dedupeKey, &ev.Payload, &processedAt,
+		&ev.CreatedAt, &ev.Attempts, &nextAttemptAt, &ev.LastError, &deadLetteredAt,
+	); err != nil {
+		return Event{}, err
 	}
+	ev.EnvironmentID, ev.DedupeKey = environmentID.String, dedupeKey.String
+	for _, f := range []struct {
+		src sql.NullTime
+		dst **time.Time
+	}{
+		{processedAt, &ev.ProcessedAt},
+		{nextAttemptAt, &ev.NextAttemptAt},
+		{deadLetteredAt, &ev.DeadLetteredAt},
+	} {
+		if f.src.Valid {
+			t := f.src.Time
+			*f.dst = &t
+		}
+	}
+	return ev, nil
+}
+
+// scanEvents drains rows into a slice, wrapping any failure with op.
+func scanEvents(rows *sql.Rows, op string) ([]Event, error) {
 	defer func() { _ = rows.Close() }() // read-only cleanup; nothing actionable if it fails
 
 	var out []Event
 	for rows.Next() {
-		var ev Event
-		var environmentID sql.NullString
-		var processedAt sql.NullTime
-		var dedupeKey sql.NullString
-		var nextAttemptAt sql.NullTime
-		if err := rows.Scan(&ev.ID, &environmentID, &ev.Kind, &dedupeKey, &ev.Payload, &processedAt, &ev.CreatedAt, &ev.Attempts, &nextAttemptAt, &ev.LastError); err != nil {
-			return nil, fmt.Errorf("listing unprocessed events: %w", err)
-		}
-		ev.EnvironmentID = environmentID.String
-		ev.DedupeKey = dedupeKey.String
-		if nextAttemptAt.Valid {
-			t := nextAttemptAt.Time
-			ev.NextAttemptAt = &t
-		}
-		if processedAt.Valid {
-			t := processedAt.Time
-			ev.ProcessedAt = &t
+		ev, err := scanEvent(rows)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", op, err)
 		}
 		out = append(out, ev)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("listing unprocessed events: %w", err)
+		return nil, fmt.Errorf("%s: %w", op, err)
 	}
 	return out, nil
+}
+
+// ListUnprocessedEvents implements Store. Dead-lettered events are excluded:
+// they are retired, not pending.
+func (s *sqliteStore) ListUnprocessedEvents(ctx context.Context) ([]Event, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT `+eventColumns+`
+		FROM events WHERE processed_at IS NULL AND dead_lettered_at IS NULL ORDER BY created_at`)
+	if err != nil {
+		return nil, fmt.Errorf("listing unprocessed events: %w", err)
+	}
+	return scanEvents(rows, "listing unprocessed events")
 }
 
 // ListDueEvents implements Store.
@@ -329,43 +401,46 @@ func (s *sqliteStore) ListDueEvents(ctx context.Context, now time.Time, limit in
 		limit = 100
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, environment_id, kind, dedupe_key, payload, processed_at, created_at, attempts, next_attempt_at, last_error
+		SELECT `+eventColumns+`
 		FROM events
-		WHERE processed_at IS NULL AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+		WHERE processed_at IS NULL AND dead_lettered_at IS NULL
+		  AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
 		ORDER BY created_at LIMIT ?`, now.UTC(), limit)
 	if err != nil {
 		return nil, fmt.Errorf("listing due events: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
-	var out []Event
-	for rows.Next() {
-		var ev Event
-		var environmentID, dedupeKey sql.NullString
-		var processedAt, nextAttemptAt sql.NullTime
-		if err := rows.Scan(&ev.ID, &environmentID, &ev.Kind, &dedupeKey, &ev.Payload, &processedAt, &ev.CreatedAt, &ev.Attempts, &nextAttemptAt, &ev.LastError); err != nil {
-			return nil, fmt.Errorf("listing due events: %w", err)
-		}
-		ev.EnvironmentID, ev.DedupeKey = environmentID.String, dedupeKey.String
-		if processedAt.Valid {
-			t := processedAt.Time
-			ev.ProcessedAt = &t
-		}
-		if nextAttemptAt.Valid {
-			t := nextAttemptAt.Time
-			ev.NextAttemptAt = &t
-		}
-		out = append(out, ev)
+	return scanEvents(rows, "listing due events")
+}
+
+// ListDeadLetteredEvents implements Store.
+func (s *sqliteStore) ListDeadLetteredEvents(ctx context.Context, limit int) ([]Event, error) {
+	if limit <= 0 {
+		limit = DefaultListLimit
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("listing due events: %w", err)
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT `+eventColumns+`
+		FROM events WHERE dead_lettered_at IS NOT NULL
+		ORDER BY dead_lettered_at DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("listing dead-lettered events: %w", err)
 	}
-	return out, nil
+	return scanEvents(rows, "listing dead-lettered events")
+}
+
+// CountDeadLetteredEvents implements Store.
+func (s *sqliteStore) CountDeadLetteredEvents(ctx context.Context) (int, error) {
+	var n int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(1) FROM events WHERE dead_lettered_at IS NOT NULL`).Scan(&n); err != nil {
+		return 0, fmt.Errorf("counting dead-lettered events: %w", err)
+	}
+	return n, nil
 }
 
 func (s *sqliteStore) ClaimEvent(ctx context.Context, id string, now, leaseUntil time.Time) (bool, error) {
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE events SET next_attempt_at = ?
-		WHERE id = ? AND processed_at IS NULL
+		WHERE id = ? AND processed_at IS NULL AND dead_lettered_at IS NULL
 		  AND (next_attempt_at IS NULL OR next_attempt_at <= ?)`, leaseUntil.UTC(), id, now.UTC())
 	if err != nil {
 		return false, fmt.Errorf("claiming event %s: %w", id, err)
@@ -391,8 +466,23 @@ func (s *sqliteStore) MarkEventProcessed(ctx context.Context, id string, process
 	return nil
 }
 
+func (s *sqliteStore) MarkEventDeadLettered(ctx context.Context, id string, at time.Time, lastError string) error {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE events SET attempts = attempts + 1, dead_lettered_at = ?, next_attempt_at = NULL, last_error = ?
+		WHERE id = ? AND processed_at IS NULL AND dead_lettered_at IS NULL`, at.UTC(), lastError, id)
+	if err != nil {
+		return fmt.Errorf("dead-lettering event %s: %w", id, err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return fmt.Errorf("dead-lettering event %s: %w", id, err)
+	} else if n == 0 {
+		return fmt.Errorf("dead-lettering event %s: %w", id, ErrNotFound)
+	}
+	return nil
+}
+
 func (s *sqliteStore) MarkEventRetry(ctx context.Context, id string, nextAttempt time.Time, lastError string) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE events SET attempts = attempts + 1, next_attempt_at = ?, last_error = ? WHERE id = ? AND processed_at IS NULL`, nextAttempt.UTC(), lastError, id)
+	res, err := s.db.ExecContext(ctx, `UPDATE events SET attempts = attempts + 1, next_attempt_at = ?, last_error = ? WHERE id = ? AND processed_at IS NULL AND dead_lettered_at IS NULL`, nextAttempt.UTC(), lastError, id)
 	if err != nil {
 		return fmt.Errorf("marking event %s retryable: %w", id, err)
 	}

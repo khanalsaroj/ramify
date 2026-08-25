@@ -6,8 +6,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -28,7 +30,8 @@ const maxWebhookBody = 2 << 20
 const maxAPIRequestBody = 1 << 20
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
-	if _, err := s.store.ListEnvironments(r.Context()); err != nil {
+	// One row is enough to prove the store answers queries.
+	if _, err := s.store.ListEnvironments(r.Context(), store.ListOptions{Limit: 1}); err != nil {
 		s.writeError(w, http.StatusServiceUnavailable, "store unavailable")
 		return
 	}
@@ -137,31 +140,63 @@ func (s *Server) processEvent(eventID string, ev providerapi.Event) {
 	}
 }
 
+// nextOffsetHeader advertises the offset of the following page. It is absent on
+// the last page, which is how a client knows to stop. The response body stays a
+// plain JSON array so existing clients keep working unchanged.
+const nextOffsetHeader = "X-Ramify-Next-Offset"
+
 func (s *Server) handleListEnvironments(w http.ResponseWriter, r *http.Request) {
-	envs, err := s.store.ListEnvironments(r.Context())
+	opts := store.ListOptions{
+		Project: r.URL.Query().Get("project"),
+		Branch:  r.URL.Query().Get("branch"),
+	}
+	var err error
+	if opts.Limit, err = intParam(r, "limit"); err != nil {
+		s.writeError(w, http.StatusBadRequest, "invalid limit")
+		return
+	}
+	if opts.Offset, err = intParam(r, "offset"); err != nil {
+		s.writeError(w, http.StatusBadRequest, "invalid offset")
+		return
+	}
+
+	// Ask for one extra row: if it comes back there is another page, and it is
+	// dropped from the response. This avoids a second COUNT query.
+	page := opts
+	page.Limit = min(max(opts.Limit, 1), store.MaxListLimit) + 1
+	if opts.Limit == 0 {
+		page.Limit = store.DefaultListLimit + 1
+	}
+
+	envs, err := s.store.ListEnvironments(r.Context(), page)
 	if err != nil {
 		s.logger.ErrorContext(r.Context(), "listing environments", "error", err)
 		s.writeError(w, http.StatusInternalServerError, "listing environments")
 		return
 	}
-
-	project := r.URL.Query().Get("project")
-	branch := r.URL.Query().Get("branch")
-	if project != "" || branch != "" {
-		filtered := make([]store.Environment, 0, len(envs))
-		for _, e := range envs {
-			if project != "" && e.Project != project {
-				continue
-			}
-			if branch != "" && e.Branch != branch {
-				continue
-			}
-			filtered = append(filtered, e)
-		}
-		envs = filtered
+	if len(envs) == page.Limit {
+		envs = envs[:page.Limit-1]
+		w.Header().Set(nextOffsetHeader, strconv.Itoa(page.Offset+len(envs)))
+	}
+	if envs == nil {
+		envs = []store.Environment{} // encode as [] rather than null
 	}
 
 	s.writeJSON(w, http.StatusOK, envs)
+}
+
+// intParam reads a non-negative integer query parameter. A missing or empty
+// value yields 0, letting the store apply its own default.
+func intParam(r *http.Request, name string) (int, error) {
+	raw := r.URL.Query().Get(name)
+	if raw == "" {
+		return 0, nil
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil || v < 0 {
+		return 0, fmt.Errorf("invalid %s parameter", name)
+	}
+	return v, nil
 }
 
 func (s *Server) handleGetEnvironment(w http.ResponseWriter, r *http.Request) {
