@@ -120,6 +120,12 @@ func (s *Server) Serve(ctx context.Context, socketPath, tcpAddr, tcpToken string
 	if tcpAddr != "" {
 		tcpListener, err := net.Listen("tcp", tcpAddr)
 		if err != nil {
+			// The unix server is already running; shut it down rather than
+			// orphaning its goroutine and listener on the way out.
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			_ = unixServer.Shutdown(shutdownCtx) // best-effort; the listen failure is the error worth reporting
+			wg.Wait()
 			return fmt.Errorf("api: listening on %s: %w", tcpAddr, err)
 		}
 		tcpServer = &http.Server{Addr: tcpAddr, Handler: tokenAuth(tcpToken)(s), ReadHeaderTimeout: 10 * time.Second}
