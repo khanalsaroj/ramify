@@ -65,7 +65,7 @@ This README is the map. Everything else lives in one of these:
 | **[Documentation site](docs/index.html)** | Overview, architecture, install, quickstart, CLI reference, config reference, FAQ — one page. Serve it with GitHub Pages (see below) or open the file directly. |
 | **[`docs/quickstart.md`](docs/quickstart.md)** | Zero to a working setup against a real GitHub repo, Cloudflare zone, and VPS — every command verified against a real generated config. |
 | **[`docs/providers.md`](docs/providers.md)** | The provider architecture, the shared contract test suites, and how to run them against a real account instead of the in-memory fakes CI uses. |
-| **[`DECISIONS.md`](DECISIONS.md)** | Every judgment call made during the build, and what's explicitly deferred — including an honest note on what's *not* independently verified yet. |
+| **[`test/e2e/`](test/e2e/)** | Docker-based end-to-end harness — Pebble as a local ACME CA, CoreDNS, a fake SSH target, a mock GitHub API. Runs as a gating CI job. |
 | **[`CONTRIBUTING.md`](CONTRIBUTING.md)** | Dev setup, required checks, commit style. |
 | **[`docs/operations.md`](docs/operations.md)** | Health, metrics, backups, durable event processing, and production security. |
 
@@ -96,9 +96,14 @@ flowchart TB
     Core --> NOT
 ```
 
-Webhook deliveries are durably stored and deduplicated before acknowledgement.
-The daemon continuously retries due failed events and exposes `/readyz` and
-`/metrics` for operational monitoring. See [`docs/operations.md`](docs/operations.md).
+Webhook deliveries are durably stored and deduplicated by `X-GitHub-Delivery`
+before they are acknowledged. Failed events carry an attempt count, a next-retry
+time, and their last error; the daemon retries due work continuously with
+exponential backoff and jitter, and retires permanently-failed events to a
+dead-letter state rather than blocking the queue. `/healthz`, `/readyz`, and a
+Prometheus-format `/metrics` expose the whole picture, and `ramify backup` takes
+a consistent SQLite snapshot via `VACUUM INTO`. See
+[`docs/operations.md`](docs/operations.md).
 
 Write your own provider by implementing one of these interfaces and wiring it into
 `ramifyd`'s startup — a shared **contract test suite** per interface (in
@@ -266,6 +271,7 @@ internal/core/      reconciler, reaper, event log, domain normalization
 internal/store/     SQLite state store + migrations
 internal/api/       local control API (webhook receiver + environments CRUD)
 internal/config/    YAML config loader ($NAME secret resolution, validation)
+internal/metrics/   process counters served in Prometheus text format
 providers/providerapi/   the five provider interfaces core depends on
 providers/git/github/    GitProvider — webhooks, PR comments
 providers/deploy/compose/  DeployProvider — SSH + docker compose
@@ -283,27 +289,44 @@ docs/                 documentation site + markdown guides
 Early development. Every provider implementation is unit-tested against
 in-memory fakes/test doubles (per the "no real network in unit tests" rule) and
 covered by the shared contract suites; the daemon wiring has been run locally
-against real external endpoints (Cloudflare, Let's Encrypt staging). The one
-piece that has **not** been independently verified is the Docker-based `test/e2e`
-harness — see [`DECISIONS.md`](DECISIONS.md) for exactly what is and isn't
-confirmed working, and why.
+against real external endpoints (Cloudflare, Let's Encrypt staging).
 
-Not built yet, and intentionally out of scope for now (see `DECISIONS.md` →
-Deferred): Kubernetes as a deploy target, GitLab/Bitbucket, DNS providers beyond
-Cloudflare, idle-detection/sleep, a web dashboard, and an out-of-process plugin
-protocol.
+The Docker-based `test/e2e` harness runs as a **gating CI job** on every push and
+pull request, driving the real reconciler and real provider implementations
+through create → verify → destroy against a live local ACME CA (Pebble), a live
+DNS server (CoreDNS), an SSH deploy target, and a mock GitHub API. The CI badge
+at the top of this README is the current answer to whether it passes.
+
+Not built yet, and intentionally out of scope for now: Kubernetes as a deploy
+target, GitLab/Bitbucket, DNS providers beyond Cloudflare, *automatic*
+idle-detection and sleep (manual sleep/wake already exists on the control API), a
+web dashboard, and an out-of-process plugin protocol.
 
 ## Development
 
 ```sh
 go build ./...
-go vet ./...
-golangci-lint run
+go vet -tags=e2e ./...
+golangci-lint run --build-tags=e2e
 go test -race -cover ./...
 ```
 
-All four must pass before opening a pull request. See
-[`CONTRIBUTING.md`](CONTRIBUTING.md) for commit style and how to add a provider.
+All four must pass before opening a pull request — they are exactly what CI runs.
+
+The end-to-end harness needs Docker and is not part of `go test ./...`; the `e2e`
+build tag keeps it out, and the test skips itself if the harness environment
+isn't present. Run it explicitly:
+
+```sh
+docker compose -f test/e2e/docker-compose.dev.yml run --build --rm test-runner
+docker compose -f test/e2e/docker-compose.dev.yml down --volumes
+```
+
+`run` rather than `up`: it waits on the `depends_on` conditions and exits with
+the test's own status, which `up --abort-on-container-exit` cannot do here — the
+one-shot zone-seeding container would abort the stack the moment it finished.
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for commit style and how to add a provider.
 
 ## License
 

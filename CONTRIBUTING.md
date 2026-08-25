@@ -2,15 +2,15 @@
 
 ## Development setup
 
-- Go 1.23+
+- Go 1.25.6+ (matches the `go` directive in `go.mod`)
 - Docker + Docker Compose (for the e2e harness under `test/e2e`)
 
 ## Workflow
 
 ```sh
 go build ./...
-go vet ./...
-golangci-lint run
+go vet -tags=e2e ./...
+golangci-lint run --build-tags=e2e
 go test -race -cover ./...
 ```
 

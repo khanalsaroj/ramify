@@ -128,9 +128,22 @@ visible side effect on someone's real repository.
 
 `test/e2e` brings up all of the above for real (Pebble for ACME, CoreDNS for DNS,
 a fake SSH deploy target, a mock GitHub API) and drives the full
-create → verify → destroy loop. See `test/e2e/docker-compose.dev.yml` to run it,
-and `DECISIONS.md` for the design decisions behind it — in particular, why it uses
-an e2e-only file-based DNS provider (`test/e2e/dnsfile`) rather than the real
-Cloudflare provider, and why it wires the reconciler and real provider
-implementations directly in a Go test process rather than running the compiled
-`ramifyd` binary.
+create → verify → destroy loop. It runs as a gating CI job on every push and pull
+request. To run it yourself:
+
+```sh
+docker compose -f test/e2e/docker-compose.dev.yml run --build --rm test-runner
+docker compose -f test/e2e/docker-compose.dev.yml down --volumes
+```
+
+`run` rather than `up`: it waits on the `depends_on` conditions and exits with the
+test's own status, which `up --abort-on-container-exit` cannot do here — the
+one-shot zone-seeding container would abort the stack the moment it finished.
+
+Two deliberate substitutions. DNS goes through an e2e-only file-based provider
+(`test/e2e/dnsfile`) rather than the real Cloudflare provider, so the harness needs
+no account and no network egress — CoreDNS serves the zone file it writes, which is
+enough for Pebble to validate a real DNS-01 challenge. And the reconciler and real
+provider implementations are wired directly in a Go test process rather than
+running the compiled `ramifyd` binary, so a failure surfaces as a Go stack trace at
+the assertion rather than as a line in a container log.

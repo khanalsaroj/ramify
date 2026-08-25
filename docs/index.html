@@ -136,6 +136,7 @@ main{min-width:0;padding-bottom:80px;}
 section{padding:56px 0;border-bottom:1px solid var(--border);scroll-margin-top:72px;}
 section:last-of-type{border-bottom:none;}
 .section-head{max-width:640px;margin-bottom:32px;}
+main section > h3{font-size:1.08rem;letter-spacing:-.01em;padding-bottom:8px;border-bottom:1px solid var(--border);max-width:660px;}
 .section-head h2{font-size:1.7rem;}
 .kicker{font-family:var(--font-mono);font-size:.72rem;letter-spacing:.1em;text-transform:uppercase;color:var(--text-muted);margin-bottom:8px;}
 
@@ -287,6 +288,7 @@ footer a:hover{color:var(--accent);}
       <p class="side-label">Reference</p>
       <ul>
         <li><a href="#providers">Providers</a></li>
+        <li><a href="#operations">Operations</a></li>
         <li><a href="#faq">FAQ</a></li>
       </ul>
     </div>
@@ -601,6 +603,7 @@ sudo systemctl enable --now ramifyd</code></pre>
             <tr><td><code>ramify logs &lt;branch&gt;</code></td><td><code>--project</code></td><td>Prints the deployed container's logs</td></tr>
             <tr><td><code>ramify destroy &lt;branch&gt;</code></td><td><code>--project</code>, <code>-y</code>/<code>--yes</code></td><td>Tears an environment down manually, with a confirmation prompt</td></tr>
             <tr><td><code>ramify doctor</code></td><td><code>--config</code></td><td>Validates config, Cloudflare, SSH, webhook secret, and ACME connectivity — independently, with named failures</td></tr>
+            <tr><td><code>ramify backup</code></td><td><code>--config</code>, <code>--output</code></td><td>Writes a consistent SQLite snapshot via <code>VACUUM INTO</code>; refuses to overwrite an existing destination</td></tr>
           </tbody>
         </table>
       </div>
@@ -665,6 +668,102 @@ sudo systemctl enable --now ramifyd</code></pre>
       wiring it into <code>ramifyd</code>'s startup — there's no out-of-process plugin protocol yet (see FAQ).
       See <a href="https://github.com/khanalsaroj/ramify/blob/main/docs/providers.md" target="_blank" rel="noopener">docs/providers.md</a>
       for how to run the contract suite against a real account instead of the in-memory fakes CI uses.</p>
+
+      <h3 style="margin-top:30px;">The end-to-end harness</h3>
+      <p class="muted">Contract suites pin down one provider at a time. <code>test/e2e</code> checks that they
+      compose: it brings up <a href="https://github.com/letsencrypt/pebble" target="_blank" rel="noopener">Pebble</a>
+      as a real local ACME CA, CoreDNS serving a file-backed zone, an SSH deploy target, and a mock GitHub API,
+      then drives the real reconciler and real provider implementations through the whole
+      create → verify → destroy loop — a certificate genuinely issued over DNS-01 against a DNS server that
+      genuinely answers the challenge. It runs as a gating job in CI on every push and pull request.</p>
+      <pre><code>docker compose -f test/e2e/docker-compose.dev.yml run --build --rm test-runner
+docker compose -f test/e2e/docker-compose.dev.yml down --volumes</code></pre>
+      <div class="callout"><code>run</code>, not <code>up</code>: it waits on the <code>depends_on</code>
+      conditions and exits with the test's own status. <code>up --abort-on-container-exit</code> can't work
+      here — the one-shot zone-seeding container would abort the stack the moment it finished.</div>
+      <p class="muted">The harness is behind the <code>e2e</code> build tag, so <code>go test ./...</code> never
+      picks it up, and the test skips itself when the harness environment isn't present. Two deliberate
+      substitutions: DNS goes through an e2e-only file-based provider
+      (<code>test/e2e/dnsfile</code>) rather than hitting Cloudflare, and the reconciler is wired up inside the
+      Go test process rather than shelling out to a compiled <code>ramifyd</code>.</p>
+    </section>
+
+    <section id="operations">
+      <div class="section-head">
+        <p class="kicker">Running it</p>
+        <h2>Operations</h2>
+        <p class="muted">What <code>ramifyd</code> exposes once it's live: health and readiness probes, counters
+        in Prometheus text format, consistent database backups, and a durable event pipeline that retries what
+        failed and quarantines what can never succeed.</p>
+      </div>
+
+      <h3 style="margin-top:26px;">Health, readiness, and metrics</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Endpoint</th><th>Checks</th></tr></thead>
+          <tbody>
+            <tr><td><code>GET /healthz</code></td><td>The daemon can read the state store</td></tr>
+            <tr><td><code>GET /readyz</code></td><td>The event store is available for reconciliation</td></tr>
+            <tr><td><code>GET /metrics</code></td><td>Counters and gauges in Prometheus text format</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout">Keep all three behind the same unix socket or authenticated/TLS-protected TCP
+      listener as the rest of the control API — they are not meant to be publicly reachable.</div>
+
+      <div class="table-wrap" style="margin-top:22px;">
+        <table>
+          <thead><tr><th>Metric</th><th>Meaning</th></tr></thead>
+          <tbody>
+            <tr><td><code>ramify_webhook_received_total</code></td><td>Webhook deliveries accepted for processing</td></tr>
+            <tr><td><code>ramify_webhook_rejected_total</code></td><td>Deliveries rejected — bad signature or malformed payload</td></tr>
+            <tr><td><code>ramify_webhook_duplicates_total</code></td><td>Redeliveries caught by <code>X-GitHub-Delivery</code> deduplication</td></tr>
+            <tr><td><code>ramify_reconciliations_total</code></td><td>Reconciliation attempts</td></tr>
+            <tr><td><code>ramify_reconciliation_failures_total</code></td><td>Failed reconciliations</td></tr>
+            <tr><td><code>ramify_retries_total</code></td><td>Retry attempts</td></tr>
+            <tr><td><code>ramify_cleanup_runs_total</code> / <code>_failures_total</code></td><td>Reaper cleanup runs, and how many failed</td></tr>
+            <tr><td><code>ramify_inbox_pending</code></td><td>Durable webhook events still waiting to be processed</td></tr>
+            <tr><td><code>ramify_events_dead_lettered</code></td><td><strong>The gauge to alert on</strong> — work was dropped, and an environment may not match its branch</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3 style="margin-top:30px;">Durable events, retries, and dead-lettering</h3>
+      <p class="muted">A webhook delivery is written to the store <em>before</em> it is acknowledged, and
+      deduplicated by its <code>X-GitHub-Delivery</code> header, so a GitHub redelivery can never apply twice.
+      Failed events record an attempt count, a next-retry time, and their last error; the daemon's worker
+      retries whatever is due, with exponential backoff and jitter — a batch of events that all failed against
+      one provider outage doesn't stampede back in lockstep when it recovers.</p>
+      <p class="muted">An event is <strong>retired instead of retried</strong> when it can't ever succeed — an
+      unmanaged DNS record collision, an ownership mismatch, an unparseable payload, an environment that no
+      longer exists — or when it exhausts its attempt budget. Retired events keep their last error and stay in
+      the <code>events</code> table for inspection, but leave the pending and due sets so the worker is never
+      blocked by work that cannot finish. Transient failures — timeouts, rate limits, 5xx — are never
+      dead-lettered on a first failure.</p>
+
+      <h3 style="margin-top:30px;">Backups</h3>
+      <pre><code>ramify backup --config /etc/ramify/ramify.yaml   --output /var/backups/ramify/ramify-$(date +%Y%m%d-%H%M%S).db</code></pre>
+      <p class="muted">Uses SQLite's <code>VACUUM INTO</code>, so the snapshot is consistent even while the
+      daemon is writing. The destination must not already exist. Test a restore — open the copy with the SQLite
+      CLI or point <code>ramifyd</code> at it — before you depend on it for recovery.</p>
+
+      <h3 style="margin-top:30px;">Paginated listings</h3>
+      <p class="muted"><code>GET /environments/</code> returns at most 100 environments by default and 500 at
+      most. Pass <code>limit</code> and <code>offset</code> to page through larger installations; when more rows
+      remain, the response carries an <code>X-Ramify-Next-Offset</code> header holding the next page's offset,
+      and its absence means you've reached the last page. <code>ramify list</code> follows these headers
+      automatically and still prints everything.</p>
+
+      <h3 style="margin-top:30px;">Production security baseline</h3>
+      <ul style="font-size:.92rem;color:var(--text-muted);padding-left:20px;max-width:660px;">
+        <li>Configure <code>deploy.ssh_known_hosts_path</code> — pin the host key rather than trusting it blindly.</li>
+        <li>Keep the unix socket at mode <code>0660</code> with a dedicated group.</li>
+        <li>Require <code>server.tcp_token</code> whenever <code>server.tcp_addr</code> is set, and put remote TCP access behind TLS or mTLS.</li>
+        <li>Use zone-scoped Cloudflare tokens and repository-scoped GitHub credentials.</li>
+        <li>Protect the SQLite database and the ACME storage directory with mode <code>0700</code>/<code>0600</code>.</li>
+      </ul>
+      <p class="muted" style="margin-top:14px;">Full detail:
+      <a href="https://github.com/khanalsaroj/ramify/blob/main/docs/operations.md" target="_blank" rel="noopener">docs/operations.md</a>.</p>
     </section>
 
     <section id="faq">
@@ -702,6 +801,13 @@ sudo systemctl enable --now ramifyd</code></pre>
         <code>ramifyd</code> replays whatever wasn't finished — nothing is silently lost or double-applied.</p>
       </details>
       <details class="faq-item">
+        <summary>How do I monitor it, and what should I alert on?</summary>
+        <p><code>/healthz</code>, <code>/readyz</code>, and Prometheus-format <code>/metrics</code>. The one
+        metric worth paging on is <code>ramify_events_dead_lettered</code>: a non-zero value means work was
+        retired without succeeding, so a preview environment may not match its branch. See
+        <a href="#operations">Operations</a>.</p>
+      </details>
+      <details class="faq-item">
         <summary>How does an environment actually expire?</summary>
         <p>Every successful apply sets or refreshes a TTL (<code>reaper.default_ttl</code>, 72h by default). A
         background reaper loop checks on <code>reaper.interval</code> and tears down anything past its TTL —
@@ -724,7 +830,7 @@ sudo systemctl enable --now ramifyd</code></pre>
     <a href="https://github.com/khanalsaroj/ramify/blob/main/README.md" target="_blank" rel="noopener">README</a>
     <a href="https://github.com/khanalsaroj/ramify/blob/main/docs/quickstart.md" target="_blank" rel="noopener">Quickstart (md)</a>
     <a href="https://github.com/khanalsaroj/ramify/blob/main/docs/providers.md" target="_blank" rel="noopener">Providers (md)</a>
-    <a href="https://github.com/khanalsaroj/ramify/blob/main/DECISIONS.md" target="_blank" rel="noopener">Decisions log</a>
+    <a href="https://github.com/khanalsaroj/ramify/blob/main/docs/operations.md" target="_blank" rel="noopener">Operations (md)</a>
     <a href="https://github.com/khanalsaroj/ramify/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener">Contributing</a>
     <a href="https://github.com/khanalsaroj/ramify/blob/main/LICENSE" target="_blank" rel="noopener">License</a>
   </div>
