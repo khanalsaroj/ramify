@@ -114,6 +114,9 @@ type webhookPayload struct {
 			Ref string `json:"ref"`
 			SHA string `json:"sha"`
 		} `json:"head"`
+		Labels []struct {
+			Name string `json:"name"`
+		} `json:"labels"`
 	} `json:"pull_request"`
 }
 
@@ -148,12 +151,21 @@ func parsePullRequestPayload(wp webhookPayload) (providerapi.Event, error) {
 		return providerapi.Event{}, fmt.Errorf("github: %w: pull_request action %q", ErrUnhandledEvent, action)
 	}
 
+	// LabelsKnown is true even when the pull request carries no labels: GitHub
+	// always sends the array, so an empty one means "no labels", not "unknown".
+	labels := make([]string, 0, len(wp.PullRequest.Labels))
+	for _, l := range wp.PullRequest.Labels {
+		labels = append(labels, l.Name)
+	}
+
 	return providerapi.Event{
-		Kind:     kind,
-		Project:  wp.Repository.FullName,
-		Branch:   wp.PullRequest.Head.Ref,
-		PRNumber: wp.PullRequest.Number,
-		Artifact: wp.PullRequest.Head.SHA,
+		Kind:        kind,
+		Project:     wp.Repository.FullName,
+		Branch:      wp.PullRequest.Head.Ref,
+		PRNumber:    wp.PullRequest.Number,
+		Artifact:    wp.PullRequest.Head.SHA,
+		Labels:      labels,
+		LabelsKnown: true,
 	}, nil
 }
 

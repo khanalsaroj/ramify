@@ -47,6 +47,11 @@ func newInitCmd() *cobra.Command {
 		dnsZoneID               string
 		acmeEmail               string
 		acmeCADirURL            string
+		filterPROnly            bool
+		filterAllowBranches     []string
+		filterDenyBranches      []string
+		filterRequiredLabels    []string
+		filterMaxConcurrentEnvs int
 	)
 
 	cmd := &cobra.Command{
@@ -71,6 +76,10 @@ func newInitCmd() *cobra.Command {
 				},
 				DNS:  config.DNSConfig{Provider: dnsProvider, Zone: dnsZone, APIToken: firstNonEmpty(dnsAPIToken, cloudflareAPIToken), CloudflareAPIToken: cloudflareAPIToken, Project: dnsProject, ZoneID: dnsZoneID},
 				ACME: config.ACMEConfig{Email: acmeEmail, CADirURL: acmeCADirURL},
+				Filter: config.FilterConfig{
+					PROnly: filterPROnly, AllowBranches: filterAllowBranches, DenyBranches: filterDenyBranches,
+					RequiredLabels: filterRequiredLabels, MaxConcurrentEnvs: filterMaxConcurrentEnvs,
+				},
 			}
 
 			if err := cfg.Validate(); err != nil {
@@ -122,6 +131,11 @@ func newInitCmd() *cobra.Command {
 	cmd.Flags().StringVar(&dnsZoneID, "dns-zone-id", "", "Hosted/managed zone ID (Google Cloud or Route 53)")
 	cmd.Flags().StringVar(&acmeEmail, "acme-email", "", "contact email for the ACME account (required)")
 	cmd.Flags().StringVar(&acmeCADirURL, "acme-ca-dir-url", "https://acme-v02.api.letsencrypt.org/directory", "ACME directory URL")
+	cmd.Flags().BoolVar(&filterPROnly, "pr-only", false, "only deploy branches that have an open pull request")
+	cmd.Flags().StringSliceVar(&filterAllowBranches, "allow-branches", nil, "branch glob patterns to deploy; empty allows all (\"*\" does not cross a slash, \"**\" does)")
+	cmd.Flags().StringSliceVar(&filterDenyBranches, "deny-branches", nil, "branch glob patterns to never deploy; evaluated before --allow-branches")
+	cmd.Flags().StringSliceVar(&filterRequiredLabels, "required-labels", nil, "deploy a pull request only if it carries one of these labels (ignored where the host has no labels)")
+	cmd.Flags().IntVar(&filterMaxConcurrentEnvs, "max-concurrent-envs", 0, "ceiling on live environments; 0 means unlimited")
 
 	return cmd
 }

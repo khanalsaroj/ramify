@@ -81,19 +81,19 @@ func TestGitProviderContract(t *testing.T) {
 			Name:      "pull request opened",
 			Payload:   prOpenedPayload,
 			Signature: sign(t, testSecret, prOpenedPayload),
-			WantEvent: providerapi.Event{Kind: "pr_synchronized", Project: "acme/web", Branch: "feature/login", PRNumber: 42, Artifact: "abc123def456"},
+			WantEvent: providerapi.Event{Kind: "pr_synchronized", Project: "acme/web", Branch: "feature/login", PRNumber: 42, Artifact: "abc123def456", Labels: []string{}, LabelsKnown: true},
 		},
 		{
 			Name:      "pull request synchronize",
 			Payload:   prSynchronizePayload,
 			Signature: sign(t, testSecret, prSynchronizePayload),
-			WantEvent: providerapi.Event{Kind: "pr_synchronized", Project: "acme/web", Branch: "feature/login", PRNumber: 42, Artifact: "def456abc123"},
+			WantEvent: providerapi.Event{Kind: "pr_synchronized", Project: "acme/web", Branch: "feature/login", PRNumber: 42, Artifact: "def456abc123", Labels: []string{}, LabelsKnown: true},
 		},
 		{
 			Name:      "pull request closed",
 			Payload:   prClosedPayload,
 			Signature: sign(t, testSecret, prClosedPayload),
-			WantEvent: providerapi.Event{Kind: "pr_closed", Project: "acme/web", Branch: "feature/login", PRNumber: 42, Artifact: "def456abc123"},
+			WantEvent: providerapi.Event{Kind: "pr_closed", Project: "acme/web", Branch: "feature/login", PRNumber: 42, Artifact: "def456abc123", Labels: []string{}, LabelsKnown: true},
 		},
 	}
 
@@ -164,4 +164,25 @@ func TestCommentOnPRInvalidProject(t *testing.T) {
 	p := NewWithToken("", testSecret)
 	err := p.CommentOnPR(context.Background(), "not-a-valid-project", 1, "hi")
 	require.Error(t, err)
+}
+
+// GitHub always sends the labels array, so an empty one genuinely means "no
+// labels" and must be reported as known. Reporting it as unknown would make a
+// required-labels policy admit every unlabeled pull request.
+func TestGitHubReportsLabelsKnownEvenWhenEmpty(t *testing.T) {
+	p := NewWithToken("", testSecret)
+
+	ev, err := p.ParseWebhook(context.Background(), prOpenedPayload, sign(t, testSecret, prOpenedPayload))
+	require.NoError(t, err)
+	require.True(t, ev.LabelsKnown)
+	require.Empty(t, ev.Labels)
+}
+
+// A push has no pull request, so labels are unknown rather than empty.
+func TestGitHubPushReportsLabelsUnknown(t *testing.T) {
+	p := NewWithToken("", testSecret)
+
+	ev, err := p.ParseWebhook(context.Background(), pushPayload, sign(t, testSecret, pushPayload))
+	require.NoError(t, err)
+	require.False(t, ev.LabelsKnown)
 }

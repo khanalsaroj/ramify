@@ -24,6 +24,7 @@ import (
 	"github.com/khanalsaroj/ramify/internal/api"
 	"github.com/khanalsaroj/ramify/internal/config"
 	"github.com/khanalsaroj/ramify/internal/core"
+	"github.com/khanalsaroj/ramify/internal/core/policy"
 	"github.com/khanalsaroj/ramify/internal/metrics"
 	"github.com/khanalsaroj/ramify/internal/store"
 	"github.com/khanalsaroj/ramify/providers/cert/acme"
@@ -129,8 +130,22 @@ func run(configPath string, logger *slog.Logger) error {
 		return fmt.Errorf("constructing notifier: %w", err)
 	}
 
+	admission := policy.Policy{
+		PROnly:         cfg.Filter.PROnly,
+		AllowBranches:  cfg.Filter.AllowBranches,
+		DenyBranches:   cfg.Filter.DenyBranches,
+		RequiredLabels: cfg.Filter.RequiredLabels,
+	}
+	logger.Info("environment admission policy",
+		"pr_only", admission.PROnly,
+		"allow_branches", admission.AllowBranches,
+		"deny_branches", admission.DenyBranches,
+		"required_labels", admission.RequiredLabels,
+		"max_concurrent_envs", cfg.Filter.MaxConcurrentEnvs)
+
 	reconciler := core.NewReconciler(st, deployProvider, dnsProvider, certProvider, notifyProvider,
-		core.NewRealClock(), cfg.BaseDomain, cfg.Reaper.DefaultTTL, logger)
+		core.NewRealClock(), cfg.BaseDomain, cfg.Reaper.DefaultTTL, logger,
+		core.WithAdmission(admission, cfg.Filter.MaxConcurrentEnvs))
 	metricSet := &metrics.Metrics{}
 	reaper := core.NewReaper(st, reconciler, core.NewRealClock(), logger, metricSet)
 	server := api.NewServer(st, reconciler, gitProvider, deployProvider, cfg.BaseDomain, logger, metricSet)

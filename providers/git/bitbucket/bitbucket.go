@@ -134,6 +134,10 @@ func parsePayload(payload []byte) (providerapi.Event, error) {
 	return parsePushPayload(wp)
 }
 
+// parsePullRequestPayload maps a pullrequest:* payload. It never sets Labels or
+// LabelsKnown: Bitbucket Cloud has no pull request label concept, so there is
+// nothing to read. A label policy sees LabelsKnown false and skips rather than
+// treating the absence as an empty label set, which would block every deploy.
 func parsePullRequestPayload(wp webhookPayload) (providerapi.Event, error) {
 	pr := wp.PullRequest
 	kind := "pr_synchronized"

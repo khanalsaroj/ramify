@@ -232,6 +232,21 @@ func (s *sqliteStore) ListEnvironments(ctx context.Context, opts ListOptions) ([
 	return out, nil
 }
 
+// CountLiveEnvironments implements Store. The count is done in SQL rather than by
+// listing: a concurrency ceiling is checked on every inbound push, and paging the
+// whole table to measure its length would scale with the number of environments
+// on every webhook.
+func (s *sqliteStore) CountLiveEnvironments(ctx context.Context) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM environments WHERE status != ?`, StatusDestroyed,
+	).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("counting live environments: %w", err)
+	}
+	return n, nil
+}
+
 // ListExpiredEnvironments implements Store.
 func (s *sqliteStore) ListExpiredEnvironments(ctx context.Context, now time.Time) ([]Environment, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+environmentColumns+` FROM environments

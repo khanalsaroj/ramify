@@ -208,3 +208,26 @@ func TestWebhookHeaderNames(t *testing.T) {
 	require.Equal(t, "X-Hub-Signature", p.SignatureHeader())
 	require.Equal(t, "X-Hook-UUID", p.DeliveryHeader())
 }
+
+// Bitbucket Cloud has no pull request labels. The provider must report them as
+// unknown rather than empty: an empty set reads as "carries no labels", which
+// would make a required-labels policy block every Bitbucket deploy.
+func TestBitbucketReportsLabelsUnknown(t *testing.T) {
+	body, err := json.Marshal(map[string]any{
+		"repository": map[string]any{"full_name": "acme/web"},
+		"pullrequest": map[string]any{
+			"id": 42, "state": "OPEN",
+			"source": map[string]any{
+				"branch": map[string]any{"name": "feature/login"},
+				"commit": map[string]any{"hash": "cafebabe"},
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	p := New("token", testSecret, "")
+	ev, err := p.ParseWebhook(context.Background(), body, sign(t, body))
+	require.NoError(t, err)
+	require.False(t, ev.LabelsKnown)
+	require.Empty(t, ev.Labels)
+}

@@ -28,6 +28,14 @@ type Event struct {
 	Branch   string
 	PRNumber int // 0 if not a PR
 	Artifact string
+	// Labels are the labels attached to the pull/merge request, when the host
+	// exposes them. LabelsKnown distinguishes "this host does not expose labels"
+	// from "the request carries none": Bitbucket Cloud has no pull request labels
+	// at all, and a bare branch push has no request to carry them. A label policy
+	// must not treat those two cases as an empty label set, so it reads
+	// LabelsKnown before Labels.
+	Labels      []string
+	LabelsKnown bool
 }
 
 // GitProvider verifies and parses inbound git-hosting webhooks into normalized
