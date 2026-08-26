@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -94,6 +95,9 @@ func (s *Server) routes() chi.Router {
 	r.Get("/healthz", s.handleHealthz)
 	r.Get("/readyz", s.handleReadyz)
 	r.Get("/metrics", s.handleMetrics)
+	r.Get("/dashboard", s.handleDashboard)
+	r.Get("/dashboard/config", s.handleDashboardConfig)
+	r.Handle("/dashboard/*", http.HandlerFunc(s.handleDashboard))
 	// The provider segment also preserves the existing /webhooks/github URL.
 	r.Post("/webhooks/{provider}", s.handleWebhook)
 	r.Route("/environments", func(r chi.Router) {
@@ -197,6 +201,10 @@ func listenUnix(path string) (net.Listener, error) {
 func tokenAuth(token string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/dashboard" || strings.HasPrefix(r.URL.Path, "/dashboard/") {
+				next.ServeHTTP(w, r)
+				return
+			}
 			provided := r.Header.Get("Authorization")
 			expected := "Bearer " + token
 			if token == "" || subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) != 1 {

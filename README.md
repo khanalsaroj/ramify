@@ -57,6 +57,13 @@ together, automatically.
 | Deploys to | Infrastructure you already run, over SSH | Infrastructure you already run | Infrastructure you already run |
 | Scope | One job: ephemeral envs from git activity | Tunneling, primarily | General app hosting/PaaS |
 
+## Operational dashboard
+
+The built-in dashboard is available at `/dashboard/` on the optional TCP API
+listener. It provides environment filtering, status/TTL visibility, preview
+links, sleep/wake/destroy actions, and auto-refreshing deployment logs. It uses
+the configured TCP bearer token and stores it only in the browser's local storage.
+
 ## Documentation
 
 This README is the map. Everything else lives in one of these:

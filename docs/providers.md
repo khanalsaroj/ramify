@@ -156,6 +156,14 @@ The Kubernetes provider uses the same idempotent Apply/Sleep/Wake/Destroy
 contract as Compose. It expects `kubectl` and cluster credentials to be available
 on the machine running `ramifyd`.
 
+## Operational dashboard
+
+When `server.tcp_addr` is enabled, open `/dashboard/` on that listener. The
+embedded dashboard lists environments, filters by project/branch/status, opens
+preview URLs, performs sleep/wake/destroy operations, and refreshes deployment
+logs automatically. API calls remain bearer-token protected; only the static UI
+shell and its non-sensitive base-domain configuration are public.
+
 ### Git hosting providers
 
 Select the provider in `ramify.yaml`:

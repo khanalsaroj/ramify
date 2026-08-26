@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Ramify Control Room</title>
+  <link rel="stylesheet" href="/dashboard/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark">R</span><span>Ramify</span><small>CONTROL ROOM</small></div>
+    <div class="top-actions"><span id="connection" class="connection offline">Disconnected</span><button id="settings" class="icon-button" title="API token">⚙</button></div>
+  </header>
+  <main class="shell">
+    <section class="hero"><div><p class="eyebrow">PREVIEW OPERATIONS</p><h1>Environment control room</h1><p class="muted">Watch deployments, inspect logs, and manage preview lifecycles from one place.</p></div><button id="refresh" class="button secondary">↻ Refresh</button></section>
+    <section class="stats"><div class="stat"><span>Total environments</span><strong id="total">—</strong></div><div class="stat"><span>Ready</span><strong id="ready" class="green">—</strong></div><div class="stat"><span>Needs attention</span><strong id="attention" class="amber">—</strong></div><div class="stat"><span>Last refresh</span><strong id="updated">—</strong></div></section>
+    <section class="workspace">
+      <div class="panel environments-panel"><div class="panel-head"><div><h2>Environments</h2><p class="muted">Auto-refreshes every 5 seconds</p></div><input id="filter" class="search" placeholder="Filter branch or project…"></div><div id="environment-list" class="environment-list"><div class="empty">Loading environments…</div></div></div>
+      <aside class="panel detail-panel"><div id="detail-empty" class="empty detail-empty"><div class="empty-icon">⌁</div><h3>Select an environment</h3><p>Choose an environment to view deployment details and live logs.</p></div><div id="detail" hidden></div></aside>
+    </section>
+  </main>
+  <div id="toast" class="toast" role="status"></div>
+  <dialog id="token-dialog"><form method="dialog" id="token-form"><div class="dialog-head"><div><p class="eyebrow">SECURE CONNECTION</p><h2>Connect to Ramify</h2></div><button value="cancel" class="close">×</button></div><p class="muted">Enter the bearer token configured for the Ramify TCP API. It stays in this browser only.</p><label>API token<input id="token" type="password" autocomplete="off" placeholder="Bearer token"></label><label class="remember"><input id="remember" type="checkbox" checked> Remember on this device</label><div class="dialog-actions"><button value="cancel" class="button secondary">Cancel</button><button value="default" class="button primary">Connect</button></div></form></dialog>
+  <script src="/dashboard/app.js"></script>
+</body>
+</html>
