@@ -42,6 +42,35 @@ import (
 	"github.com/khanalsaroj/ramify/test/e2e/dnsfile"
 )
 
+// certificateDir is where the Compose provider installs TLS material on the
+// deploy host. Production sets this from deploy.certificate_dir; the harness has
+// to set it too, or InstallCertificate refuses to write and apply fails.
+const certificateDir = "/deploy/certificates"
+
+// sshRun executes one command on the mock deploy target and returns its output,
+// so assertions can inspect what the Compose provider actually wrote. The
+// provider's own SSH runner is unexported, and staying out of it keeps this test
+// checking observable results rather than internals.
+func sshRun(t *testing.T, addr, user string, signer ssh.Signer, cmd string) string {
+	t.Helper()
+	client, err := ssh.Dial("tcp", addr, &ssh.ClientConfig{
+		User:            user,
+		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec // e2e harness against a throwaway container
+		Timeout:         10 * time.Second,
+	})
+	require.NoError(t, err)
+	defer func() { _ = client.Close() }()
+
+	session, err := client.NewSession()
+	require.NoError(t, err)
+	defer func() { _ = session.Close() }()
+
+	out, err := session.CombinedOutput(cmd)
+	require.NoError(t, err, "ssh %q: %s", cmd, string(out))
+	return string(out)
+}
+
 type env struct {
 	zoneFile      string
 	zone          string
@@ -192,6 +221,10 @@ func TestFullLifecycle(t *testing.T) {
 	signer, err := ssh.ParsePrivateKey(keyBytes)
 	require.NoError(t, err)
 	deployProvider := compose.New(e.sshAddr, e.sshUser, signer, ssh.InsecureIgnoreHostKey(), "/deploy/docker-compose.yml", "203.0.113.10") //nolint:gosec // e2e test harness only, no production host key trust to establish
+	// ramifyd calls this from deploy.certificate_dir; without it InstallCertificate
+	// refuses to write and the whole apply fails at the certificate step, which is
+	// exactly what this test was missing before.
+	deployProvider.SetCertificateDir(certificateDir)
 
 	dnsProvider := dnsfile.New(e.zoneFile, e.zone)
 
@@ -245,6 +278,13 @@ func TestFullLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, logs, "image_tag="+e.artifactRef)
 
+	// --- verify the issued certificate was installed on the deploy host, the
+	// only way TLS material reaches a Compose target ---
+	fqdnForCert := subdomain + "." + e.zone
+	stem := sha256.Sum256([]byte(fqdnForCert))
+	certOut := sshRun(t, e.sshAddr, e.sshUser, signer, "cat "+certificateDir+"/"+hex.EncodeToString(stem[:])+".crt")
+	require.Contains(t, certOut, "BEGIN CERTIFICATE", "certificate must be installed on the deploy host")
+
 	// --- verify the DNS record and its TXT ownership tag are actually being
 	// served by CoreDNS (not just present in our own bookkeeping) ---
 	fqdn := subdomain + "." + e.zone
@@ -287,6 +327,29 @@ func TestFullLifecycle(t *testing.T) {
 	})
 
 	requireCommentContains(t, e.githubBaseURL, "destroyed")
+
+	// The ready notification and the destroyed one must land on a single comment.
+	// UpsertPreviewComment exists to avoid pull request spam, and until the mock
+	// answered list and edit that contract had no end-to-end coverage.
+	require.Equal(t, 1, countComments(t, e.githubBaseURL),
+		"lifecycle notifications must upsert one comment, not append several")
+}
+
+// countComments reports how many comments the mock GitHub server holds.
+func countComments(t *testing.T, githubBaseURL string) int {
+	t.Helper()
+	client := &http.Client{Timeout: 10 * time.Second}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, githubBaseURL+"_test/comments", nil)
+	require.NoError(t, err)
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	var got []struct {
+		Body string `json:"body"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+	return len(got)
 }
 
 func requireCommentContains(t *testing.T, githubBaseURL, substring string) {

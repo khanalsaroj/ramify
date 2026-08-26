@@ -46,6 +46,45 @@ func mergeRequestPayload(t *testing.T, action, state string) []byte {
 	return body
 }
 
+// GitLab puts labels at the top level of the hook and keys them by title, not
+// name. Getting either wrong yields an empty label set, which reads as "the merge
+// request has no labels" and silently blocks every deploy under a label policy.
+func TestMergeRequestLabelsAreReadFromTheTopLevelTitles(t *testing.T) {
+	body, err := json.Marshal(map[string]any{
+		"object_kind": "merge_request",
+		"project":     map[string]any{"path_with_namespace": "acme/api"},
+		"object_attributes": map[string]any{
+			"action": "open", "state": "opened", "iid": 42,
+			"source_branch": "feature/login",
+			"last_commit":   map[string]any{"id": "cafebabe"},
+		},
+		"labels": []map[string]any{{"title": "preview"}, {"title": "backend"}},
+	})
+	require.NoError(t, err)
+
+	ev, err := New("token", testSecret, "").ParseWebhook(context.Background(), body, testSecret)
+	require.NoError(t, err)
+	require.True(t, ev.LabelsKnown)
+	require.Equal(t, []string{"preview", "backend"}, ev.Labels)
+}
+
+// A push carries no merge request, so it must report labels as unknown rather
+// than as an empty set a label policy would then block on.
+func TestPushReportsLabelsUnknown(t *testing.T) {
+	body, err := json.Marshal(map[string]any{
+		"object_kind": "push",
+		"project":     map[string]any{"path_with_namespace": "acme/api"},
+		"ref":         "refs/heads/feature/login",
+		"after":       "cafebabe",
+	})
+	require.NoError(t, err)
+
+	ev, err := New("token", testSecret, "").ParseWebhook(context.Background(), body, testSecret)
+	require.NoError(t, err)
+	require.False(t, ev.LabelsKnown)
+	require.Empty(t, ev.Labels)
+}
+
 func TestProviderContract(t *testing.T) {
 	p := New("token", testSecret, "")
 
@@ -72,7 +111,7 @@ func TestProviderContract(t *testing.T) {
 			Signature: testSecret,
 			WantEvent: providerapi.Event{
 				Kind: "pr_synchronized", Project: "acme/api", Branch: "feature/login",
-				PRNumber: 42, Artifact: "cafebabe",
+				PRNumber: 42, Artifact: "cafebabe", Labels: []string{}, LabelsKnown: true,
 			},
 		},
 		{

@@ -104,6 +104,11 @@ type webhookPayload struct {
 			ID string `json:"id"`
 		} `json:"last_commit"`
 	} `json:"object_attributes"`
+	// Labels sits at the top level of the merge request hook, not inside
+	// object_attributes, and carries titles rather than names.
+	Labels []struct {
+		Title string `json:"title"`
+	} `json:"labels"`
 }
 
 func parsePayload(payload []byte) (providerapi.Event, error) {
@@ -119,6 +124,17 @@ func parsePayload(payload []byte) (providerapi.Event, error) {
 	default:
 		return providerapi.Event{}, fmt.Errorf("gitlab: %w: object_kind %q", ErrUnhandledEvent, wp.ObjectKind)
 	}
+}
+
+// mergeRequestLabels flattens the hook's label objects to their titles. An empty
+// result still means "known and none": GitLab sends the array on every merge
+// request hook, so its absence is indistinguishable from a request with no labels.
+func mergeRequestLabels(wp webhookPayload) []string {
+	out := make([]string, 0, len(wp.Labels))
+	for _, l := range wp.Labels {
+		out = append(out, l.Title)
+	}
+	return out
 }
 
 func parseMergeRequestPayload(wp webhookPayload) (providerapi.Event, error) {
@@ -137,11 +153,13 @@ func parseMergeRequestPayload(wp webhookPayload) (providerapi.Event, error) {
 		}, nil
 	case attrs.Action == "open" || attrs.Action == "reopen" || attrs.Action == "update":
 		return providerapi.Event{
-			Kind:     "pr_synchronized",
-			Project:  wp.Project.PathWithNamespace,
-			Branch:   attrs.SourceBranch,
-			PRNumber: attrs.IID,
-			Artifact: attrs.LastCommit.ID,
+			Kind:        "pr_synchronized",
+			Project:     wp.Project.PathWithNamespace,
+			Branch:      attrs.SourceBranch,
+			PRNumber:    attrs.IID,
+			Artifact:    attrs.LastCommit.ID,
+			Labels:      mergeRequestLabels(wp),
+			LabelsKnown: true,
 		}, nil
 	default:
 		return providerapi.Event{}, fmt.Errorf("gitlab: %w: merge_request action %q", ErrUnhandledEvent, attrs.Action)

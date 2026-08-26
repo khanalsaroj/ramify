@@ -25,6 +25,7 @@ type Config struct {
 	Deploy     DeployConfig `yaml:"deploy"`
 	DNS        DNSConfig    `yaml:"dns"`
 	ACME       ACMEConfig   `yaml:"acme"`
+	Filter     FilterConfig `yaml:"filter"`
 	Notify     NotifyConfig `yaml:"notify"`
 	Log        LogConfig    `yaml:"log"`
 }
@@ -73,9 +74,13 @@ type DeployConfig struct {
 	// OpenSSH-format known_hosts file. Left empty, the host key is not verified —
 	// acceptable only for a first connection to a host you've provisioned
 	// yourself; ramify doctor warns if this is unset.
-	SSHKnownHostsPath       string `yaml:"ssh_known_hosts_path,omitempty"`
-	ComposeFile             string `yaml:"compose_file"`
-	DNSTarget               string `yaml:"dns_target"`
+	SSHKnownHostsPath string `yaml:"ssh_known_hosts_path,omitempty"`
+	ComposeFile       string `yaml:"compose_file"`
+	DNSTarget         string `yaml:"dns_target"`
+	// CertificateDir is the remote directory TLS material is installed into, read
+	// by the operator's reverse proxy. Required for the compose provider: it is
+	// the only path a certificate has to that host. Unused by kubernetes, which
+	// installs certificates as Secrets instead.
 	CertificateDir          string `yaml:"certificate_dir,omitempty"`
 	KubernetesNamespace     string `yaml:"kubernetes_namespace,omitempty"`
 	KubernetesContext       string `yaml:"kubernetes_context,omitempty"`
@@ -100,6 +105,29 @@ type ACMEConfig struct {
 	Email      string `yaml:"email"`
 	CADirURL   string `yaml:"ca_dir_url"`
 	StorageDir string `yaml:"storage_dir"`
+}
+
+// FilterConfig decides which webhook events produce a preview environment.
+// Its zero value admits everything, which is what Ramify did before the block
+// existed: every rule here is opt-in, and omitting the block changes nothing.
+type FilterConfig struct {
+	// PROnly ignores branch pushes with no associated pull request.
+	PROnly bool `yaml:"pr_only"`
+	// AllowBranches and DenyBranches are glob patterns following the same
+	// convention as GitHub Actions branch filters: "*" does not cross a slash,
+	// "**" does. Deny is evaluated first and wins. An empty AllowBranches allows
+	// every branch that Deny does not reject.
+	AllowBranches []string `yaml:"allow_branches"`
+	DenyBranches  []string `yaml:"deny_branches"`
+	// RequiredLabels gates on pull request labels, matched case insensitively. A
+	// request must carry at least one. The rule is skipped where the host cannot
+	// report labels: Bitbucket Cloud has none, and a bare branch push has no
+	// request to carry them. Pair with PROnly to make it absolute.
+	RequiredLabels []string `yaml:"required_labels"`
+	// MaxConcurrentEnvs caps live environments (every status except destroyed).
+	// At the ceiling a push for a *new* environment is skipped; pushes to
+	// environments that already exist still deploy. Zero means no ceiling.
+	MaxConcurrentEnvs int `yaml:"max_concurrent_envs"`
 }
 
 // NotifyConfig configures providers/notify/githubcomment. CommentTemplates maps a
@@ -246,6 +274,14 @@ func (c Config) Validate() error {
 		if c.Deploy.SSHPrivateKeyPath == "" {
 			missing = append(missing, "deploy.ssh_private_key_path")
 		}
+		// Required, not optional. SSH is the only route TLS material has to a
+		// Compose deploy host, so without this the certificate Ramify just
+		// obtained has nowhere to go and InstallCertificate fails every apply
+		// after five retries. Failing at startup names the cause; failing per
+		// apply does not.
+		if c.Deploy.CertificateDir == "" {
+			missing = append(missing, "deploy.certificate_dir")
+		}
 	}
 	if deployProvider != "compose" && deployProvider != "kubernetes" {
 		missing = append(missing, "deploy.provider (compose or kubernetes)")
@@ -280,6 +316,9 @@ func (c Config) Validate() error {
 	}
 	if c.ACME.CADirURL == "" {
 		missing = append(missing, "acme.ca_dir_url")
+	}
+	if c.Filter.MaxConcurrentEnvs < 0 {
+		missing = append(missing, "filter.max_concurrent_envs (must be zero for unlimited, or a positive count)")
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("missing required fields: %s", strings.Join(missing, ", "))

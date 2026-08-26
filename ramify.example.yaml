@@ -55,7 +55,10 @@ deploy:
   # reverse proxy on that host is expected to route by Host header to the right
   # compose service.
   dns_target: 203.0.113.10
-  # Optional remote directory mounted/read by the reverse proxy for TLS files.
+  # Remote directory TLS material is installed into, mounted/read by your
+  # reverse proxy. Required when provider is compose: SSH is the only route a
+  # certificate has to that host. Unused by kubernetes, which installs
+  # certificates as Secrets instead.
   certificate_dir: /srv/ramify/certificates
   # Kubernetes options (used when provider is kubernetes).
   kubernetes_namespace: ramify
@@ -75,6 +78,32 @@ dns:
   api_token: ""
   project: ""
   zone_id: ""
+
+filter:
+  # Which webhook events are allowed to create an environment. Omit this whole
+  # block to deploy every branch push, which is the behavior Ramify had before
+  # these rules existed.
+  #
+  # Only deploy branches that have an open pull/merge request.
+  pr_only: false
+  # Branch glob patterns, following the same convention as GitHub Actions branch
+  # filters: "*" does not cross a slash, "**" does. So "dependabot/*" does NOT
+  # match "dependabot/npm/lodash" -- use "dependabot/**" for that.
+  # deny_branches is evaluated first and wins, so a narrow exclusion can be
+  # carved out of a broad allow. An empty allow_branches allows everything that
+  # deny_branches does not reject.
+  allow_branches: []
+  deny_branches: []
+  # Deploy a pull request only if it carries at least one of these labels,
+  # matched case insensitively. Skipped where the host cannot report labels:
+  # Bitbucket Cloud has no pull request labels, and a bare branch push has no
+  # request to carry them. Set pr_only alongside this to make the gate absolute.
+  required_labels: []
+  # Ceiling on live environments (every status except destroyed). At the ceiling
+  # a push for a NEW environment is skipped and logged; pushes to environments
+  # that already exist still deploy, so nothing already live goes stale. Nothing
+  # is ever evicted to make room. 0 means unlimited.
+  max_concurrent_envs: 0
 
 acme:
   email: ops@example.com

@@ -134,6 +134,12 @@ type Store interface {
 	// ListExpiredEnvironments returns non-pinned environments whose TTLExpiresAt
 	// is set and at or before now.
 	ListExpiredEnvironments(ctx context.Context, now time.Time) ([]Environment, error)
+	// CountLiveEnvironments returns the number of environments still holding
+	// infrastructure, meaning every status except StatusDestroyed. Failed and
+	// pending environments are counted: both can hold a partially created DNS
+	// record or container, so excluding them would let a run of failures overrun
+	// a concurrency ceiling.
+	CountLiveEnvironments(ctx context.Context) (int, error)
 
 	// CreateDNSRecord inserts rec and returns the stored row.
 	CreateDNSRecord(ctx context.Context, rec DNSRecord) (DNSRecord, error)
