@@ -73,7 +73,7 @@ func TestServeUnixSocket(t *testing.T) {
 func TestDashboardAssetsAreServed(t *testing.T) {
 	h := newTestHarness(t)
 
-	for _, path := range []string{"/dashboard/", "/dashboard/style.css", "/dashboard/app.js", "/dashboard/config"} {
+	for _, path := range []string{"/dashboard/", "/dashboard/config"} {
 		req, err := http.NewRequest(http.MethodGet, path, nil)
 		require.NoError(t, err)
 		rec := httptest.NewRecorder()

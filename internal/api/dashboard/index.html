@@ -4,23 +4,619 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Ramify Control Room</title>
-  <link rel="stylesheet" href="/dashboard/style.css">
+  <style>
+:root {
+    color-scheme: dark;
+    --bg: #0b1017;
+    --panel: #111923;
+    --panel2: #172331;
+    --line: #263545;
+    --text: #e7eef7;
+    --muted: #91a2b5;
+    --accent: #6ee7b7;
+    --accent2: #60a5fa;
+    --amber: #fbbf24;
+    --red: #fb7185;
+    --shadow: 0 18px 50px #0005
+}
+
+* {
+    box-sizing: border-box
+}
+
+body {
+    margin: 0;
+    background: radial-gradient(circle at 80% -10%, #1d3847 0, #0b1017 40%);
+    color: var(--text);
+    font: 14px/1.5 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif
+}
+
+.topbar {
+    height: 72px;
+    border-bottom: 1px solid var(--line);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 34px;
+    background: #0b1017dd;
+    backdrop-filter: blur(12px);
+    position: sticky;
+    top: 0;
+    z-index: 3
+}
+
+.brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-weight: 750;
+    letter-spacing: .02em
+}
+
+.brand small {
+    color: var(--muted);
+    font-size: 10px;
+    letter-spacing: .16em;
+    margin-left: 5px
+}
+
+.brand-mark {
+    display: grid;
+    place-items: center;
+    width: 31px;
+    height: 31px;
+    border-radius: 9px;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    color: #071016;
+    font-weight: 900
+}
+
+.top-actions {
+    display: flex;
+    align-items: center;
+    gap: 15px
+}
+
+.connection {
+    font-size: 12px
+}
+
+.connection:before {
+    content: "";
+    display: inline-block;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    margin-right: 7px;
+    background: var(--red)
+}
+
+.connection.online:before {
+    background: var(--accent);
+    box-shadow: 0 0 12px var(--accent)
+}
+
+.connection.online {
+    color: var(--accent)
+}
+
+.connection.offline {
+    color: var(--muted)
+}
+
+button {
+    font: inherit;
+    cursor: pointer
+}
+
+.icon-button, .close {
+    border: 0;
+    background: none;
+    color: var(--muted);
+    font-size: 20px;
+    padding: 7px
+}
+
+.shell {
+    max-width: 1480px;
+    margin: auto;
+    padding: 44px 34px 70px
+}
+
+.hero {
+    display: flex;
+    justify-content: space-between;
+    align-items: end;
+    margin-bottom: 30px
+}
+
+.eyebrow {
+    font-size: 10px;
+    letter-spacing: .18em;
+    color: var(--accent);
+    font-weight: 750;
+    margin: 0 0 9px
+}
+
+.hero h1 {
+    font-size: 32px;
+    letter-spacing: -.04em;
+    margin: 0 0 8px
+}
+
+.muted {
+    color: var(--muted);
+    margin: 0
+}
+
+.button {
+    border: 1px solid transparent;
+    border-radius: 9px;
+    padding: 10px 15px;
+    font-weight: 700
+}
+
+.button.primary {
+    background: var(--accent);
+    color: #06110f
+}
+
+.button.secondary {
+    background: var(--panel2);
+    border-color: var(--line);
+    color: var(--text)
+}
+
+.button.danger {
+    background: #47202d;
+    border-color: #713143;
+    color: #fecdd3
+}
+
+.button.small {
+    font-size: 12px;
+    padding: 7px 10px
+}
+
+.stats {
+    display: grid;
+    grid-template-columns:repeat(4, 1fr);
+    gap: 14px;
+    margin-bottom: 18px
+}
+
+.stat, .panel {
+    background: linear-gradient(145deg, #131e2a, #101822);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    box-shadow: var(--shadow)
+}
+
+.stat {
+    padding: 18px 20px
+}
+
+.stat span {
+    display: block;
+    color: var(--muted);
+    font-size: 12px;
+    margin-bottom: 7px
+}
+
+.stat strong {
+    font-size: 25px;
+    letter-spacing: -.04em
+}
+
+.green {
+    color: var(--accent)
+}
+
+.amber {
+    color: var(--amber)
+}
+
+.workspace {
+    display: grid;
+    grid-template-columns:minmax(0, 1.05fr) minmax(380px, .95fr);
+    gap: 18px
+}
+
+.panel {
+    overflow: hidden
+}
+
+.panel-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 20px;
+    border-bottom: 1px solid var(--line)
+}
+
+h2 {
+    font-size: 17px;
+    margin: 0 0 3px
+}
+
+h3 {
+    margin: 0 0 5px
+}
+
+.search {
+    background: #0c141e;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    color: var(--text);
+    padding: 9px 11px;
+    width: 220px;
+    outline: none
+}
+
+.search:focus, input:focus {
+    border-color: var(--accent2)
+}
+
+.environment-list {
+    max-height: 650px;
+    overflow: auto
+}
+
+.environment {
+    padding: 17px 20px;
+    border-bottom: 1px solid #20303e;
+    cursor: pointer;
+    transition: .16s
+}
+
+.environment:hover, .environment.selected {
+    background: #182635
+}
+
+.env-main {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px
+}
+
+.env-name {
+    font-weight: 700;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap
+}
+
+.env-branch {
+    color: var(--accent2);
+    font-family: ui-monospace, SFMono-Regular, monospace;
+    font-size: 12px;
+    margin-top: 4px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap
+}
+
+.env-meta {
+    display: flex;
+    gap: 14px;
+    color: var(--muted);
+    font-size: 11px;
+    margin-top: 10px
+}
+
+.badge {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    border-radius: 20px;
+    padding: 4px 8px;
+    white-space: nowrap;
+    border: 1px solid
+}
+
+.badge.ready {
+    color: var(--accent);
+    border-color: #2b775e;
+    background: #12392f
+}
+
+.badge.failed, .badge.destroying {
+    color: var(--red);
+    border-color: #753343;
+    background: #3b1b27
+}
+
+.badge.sleeping, .badge.expired {
+    color: var(--amber);
+    border-color: #765b1b;
+    background: #3b2c0d
+}
+
+.badge.applying, .badge.pending {
+    color: var(--accent2);
+    border-color: #28568b;
+    background: #122a49
+}
+
+.detail-panel {
+    min-height: 650px
+}
+
+.detail {
+    padding: 25px
+}
+
+.detail-title {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: start
+}
+
+.detail h2 {
+    font-size: 23px;
+    letter-spacing: -.03em
+}
+
+.detail-branch {
+    font-family: ui-monospace, monospace;
+    color: var(--accent2);
+    margin: 5px 0 19px
+}
+
+.actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin: 18px 0 24px
+}
+
+.facts {
+    display: grid;
+    grid-template-columns:1fr 1fr;
+    gap: 13px;
+    margin-bottom: 24px
+}
+
+.fact {
+    background: #0c141e;
+    border: 1px solid #20303e;
+    border-radius: 9px;
+    padding: 11px
+}
+
+.fact span {
+    color: var(--muted);
+    font-size: 10px;
+    display: block;
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    margin-bottom: 4px
+}
+
+.fact b {
+    font-size: 12px;
+    word-break: break-word
+}
+
+.logs-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px
+}
+
+.logs {
+    background: #080d13;
+    border: 1px solid #1d2a36;
+    border-radius: 9px;
+    min-height: 250px;
+    max-height: 390px;
+    overflow: auto;
+    padding: 14px;
+    color: #b8c7d8;
+    font: 12px/1.6 ui-monospace, SFMono-Regular, monospace;
+    white-space: pre-wrap
+}
+
+.empty {
+    text-align: center;
+    color: var(--muted);
+    padding: 55px 25px
+}
+
+.detail-empty {
+    padding-top: 170px
+}
+
+.empty-icon {
+    font-size: 38px;
+    color: #46627d;
+    margin-bottom: 13px
+}
+
+.toast {
+    position: fixed;
+    right: 25px;
+    bottom: 25px;
+    background: #dce9f7;
+    color: #0b1017;
+    padding: 12px 16px;
+    border-radius: 9px;
+    box-shadow: var(--shadow);
+    transform: translateY(120px);
+    transition: .25s;
+    z-index: 5
+}
+
+.toast.show {
+    transform: translateY(0)
+}
+
+dialog {
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    background: var(--panel);
+    color: var(--text);
+    box-shadow: var(--shadow);
+    max-width: 430px;
+    width: calc(100% - 30px);
+    padding: 0
+}
+
+dialog::backdrop {
+    background: #02060baa;
+    backdrop-filter: blur(3px)
+}
+
+dialog form {
+    padding: 25px
+}
+
+.dialog-head {
+    display: flex;
+    justify-content: space-between
+}
+
+.dialog-head h2 {
+    font-size: 22px
+}
+
+label {
+    display: block;
+    font-size: 12px;
+    color: var(--muted);
+    margin-top: 18px
+}
+
+label input[type=password] {
+    display: block;
+    width: 100%;
+    margin-top: 7px;
+    background: #0c141e;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    color: var(--text);
+    padding: 11px
+}
+
+.remember {
+    display: flex;
+    gap: 8px;
+    align-items: center
+}
+
+.remember input {
+    accent-color: var(--accent)
+}
+
+.dialog-actions {
+    display: flex;
+    justify-content: end;
+    gap: 9px;
+    margin-top: 24px
+}
+
+@media (max-width: 900px) {
+    .workspace {
+        grid-template-columns:1fr
+    }
+
+    .detail-panel {
+        min-height: 450px
+    }
+
+    .stats {
+        grid-template-columns:repeat(2, 1fr)
+    }
+}
+
+@media (max-width: 580px) {
+    .topbar {
+        padding: 0 17px
+    }
+
+    .shell {
+        padding: 30px 15px
+    }
+
+    .hero {
+        align-items: start;
+        gap: 20px;
+        flex-direction: column
+    }
+
+    .hero h1 {
+        font-size: 27px
+    }
+
+    .panel-head {
+        display: block
+    }
+
+    .search {
+        width: 100%;
+        margin-top: 15px
+    }
+
+    .brand small {
+        display: none
+    }
+
+    .stats {
+        gap: 9px
+    }
+
+    .stat {
+        padding: 14px
+    }
+
+    .stat strong {
+        font-size: 21px
+    }
+}
+
+
+  </style>
 </head>
 <body>
   <header class="topbar">
     <div class="brand"><span class="brand-mark">R</span><span>Ramify</span><small>CONTROL ROOM</small></div>
-    <div class="top-actions"><span id="connection" class="connection offline">Disconnected</span><button id="settings" class="icon-button" title="API token">⚙</button></div>
+    <div class="top-actions"><span id="connection" class="connection offline">Disconnected</span><button id="settings" class="icon-button" title="API token">âš™</button></div>
   </header>
   <main class="shell">
-    <section class="hero"><div><p class="eyebrow">PREVIEW OPERATIONS</p><h1>Environment control room</h1><p class="muted">Watch deployments, inspect logs, and manage preview lifecycles from one place.</p></div><button id="refresh" class="button secondary">↻ Refresh</button></section>
-    <section class="stats"><div class="stat"><span>Total environments</span><strong id="total">—</strong></div><div class="stat"><span>Ready</span><strong id="ready" class="green">—</strong></div><div class="stat"><span>Needs attention</span><strong id="attention" class="amber">—</strong></div><div class="stat"><span>Last refresh</span><strong id="updated">—</strong></div></section>
+    <section class="hero"><div><p class="eyebrow">PREVIEW OPERATIONS</p><h1>Environment control room</h1><p class="muted">Watch deployments, inspect logs, and manage preview lifecycles from one place.</p></div><button id="refresh" class="button secondary">â†» Refresh</button></section>
+    <section class="stats"><div class="stat"><span>Total environments</span><strong id="total">â€”</strong></div><div class="stat"><span>Ready</span><strong id="ready" class="green">â€”</strong></div><div class="stat"><span>Needs attention</span><strong id="attention" class="amber">â€”</strong></div><div class="stat"><span>Last refresh</span><strong id="updated">â€”</strong></div></section>
     <section class="workspace">
-      <div class="panel environments-panel"><div class="panel-head"><div><h2>Environments</h2><p class="muted">Auto-refreshes every 5 seconds</p></div><input id="filter" class="search" placeholder="Filter branch or project…"></div><div id="environment-list" class="environment-list"><div class="empty">Loading environments…</div></div></div>
-      <aside class="panel detail-panel"><div id="detail-empty" class="empty detail-empty"><div class="empty-icon">⌁</div><h3>Select an environment</h3><p>Choose an environment to view deployment details and live logs.</p></div><div id="detail" hidden></div></aside>
+      <div class="panel environments-panel"><div class="panel-head"><div><h2>Environments</h2><p class="muted">Auto-refreshes every 5 seconds</p></div><input id="filter" class="search" placeholder="Filter branch or projectâ€¦"></div><div id="environment-list" class="environment-list"><div class="empty">Loading environmentsâ€¦</div></div></div>
+      <aside class="panel detail-panel"><div id="detail-empty" class="empty detail-empty"><div class="empty-icon">âŒ</div><h3>Select an environment</h3><p>Choose an environment to view deployment details and live logs.</p></div><div id="detail" hidden></div></aside>
     </section>
   </main>
   <div id="toast" class="toast" role="status"></div>
-  <dialog id="token-dialog"><form method="dialog" id="token-form"><div class="dialog-head"><div><p class="eyebrow">SECURE CONNECTION</p><h2>Connect to Ramify</h2></div><button value="cancel" class="close">×</button></div><p class="muted">Enter the bearer token configured for the Ramify TCP API. It stays in this browser only.</p><label>API token<input id="token" type="password" autocomplete="off" placeholder="Bearer token"></label><label class="remember"><input id="remember" type="checkbox" checked> Remember on this device</label><div class="dialog-actions"><button value="cancel" class="button secondary">Cancel</button><button value="default" class="button primary">Connect</button></div></form></dialog>
-  <script src="/dashboard/app.js"></script>
+  <dialog id="token-dialog"><form method="dialog" id="token-form"><div class="dialog-head"><div><p class="eyebrow">SECURE CONNECTION</p><h2>Connect to Ramify</h2></div><button value="cancel" class="close">Ã—</button></div><p class="muted">Enter the bearer token configured for the Ramify TCP API. It stays in this browser only.</p><label>API token<input id="token" type="password" autocomplete="off" placeholder="Bearer token"></label><label class="remember"><input id="remember" type="checkbox" checked> Remember on this device</label><div class="dialog-actions"><button value="cancel" class="button secondary">Cancel</button><button value="default" class="button primary">Connect</button></div></form></dialog>
+  <script>
+const state={token:localStorage.getItem('ramify.token')||'',envs:[],selected:null,baseDomain:'',logsTimer:null,refreshTimer:null};
+const $=id=>document.getElementById(id);
+const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function api(path,options={}){options.headers={...(options.headers||{}),...(state.token?{Authorization:`Bearer ${state.token}`}:{})};return fetch(path,options).then(async r=>{if(r.status===401){openToken();throw Error('Unauthorized')}if(!r.ok)throw Error((await r.text())||`Request failed (${r.status})`);return r});}
+function openToken(){const d=$('token-dialog');$('token').value=state.token;d.showModal()}
+function toast(message){const t=$('toast');t.textContent=message;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),3200)}
+function statusClass(s){return String(s||'').toLowerCase().replace(/[^a-z]/g,'')}
+function relativeTime(value){if(!value)return 'â€”';const d=new Date(value),m=Math.round((Date.now()-d)/60000);if(m<1)return 'just now';if(m<60)return `${m}m ago`;const h=Math.round(m/60);if(h<48)return `${h}h ago`;return `${Math.round(h/24)}d ago`}
+function expiry(value){if(!value)return 'No expiry';const d=new Date(value),m=Math.round((d-Date.now())/60000);if(m<0)return 'expired';if(m<60)return `${m}m left`;if(m<1440)return `${Math.round(m/60)}h left`;return `${Math.round(m/1440)}d left`}
+async function load(){try{const r=await api('/environments/?limit=100');state.envs=await r.json();$('connection').className='connection online';$('connection').textContent='Live';renderList();renderStats();if(state.selected){const found=state.envs.find(e=>e.ID===state.selected.ID);if(found){state.selected=found;renderDetail()}}$('updated').textContent=new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});}catch(e){$('connection').className='connection offline';$('connection').textContent='Disconnected';if(e.message!=='Unauthorized')toast(e.message)}}
+function renderStats(){$('total').textContent=state.envs.length;$('ready').textContent=state.envs.filter(e=>['ready','running'].includes(String(e.Status).toLowerCase())).length;$('attention').textContent=state.envs.filter(e=>['failed','destroying','expired'].includes(String(e.Status).toLowerCase())).length}
+function renderList(){const q=$('filter').value.toLowerCase();const list=state.envs.filter(e=>`${e.Project} ${e.Branch} ${e.Status}`.toLowerCase().includes(q));$('environment-list').innerHTML=list.length?list.map(e=>`<div class="environment ${state.selected?.ID===e.ID?'selected':''}" data-id="${esc(e.ID)}"><div class="env-main"><div class="env-name">${esc(e.Project)}</div><span class="badge ${statusClass(e.Status)}">${esc(e.Status)}</span></div><div class="env-branch">âŽ‡ ${esc(e.Branch)}</div><div class="env-meta"><span>${esc(e.Subdomain)}.${esc(state.baseDomain)}</span><span>${esc(expiry(e.TTLExpiresAt))}</span><span>${esc(relativeTime(e.UpdatedAt))}</span></div></div>`).join(''):'<div class="empty">No environments match this filter.</div>';document.querySelectorAll('.environment').forEach(x=>x.onclick=()=>select(x.dataset.id))}
+async function select(id){state.selected=state.envs.find(e=>e.ID===id)||null;renderList();renderDetail();loadLogs()}
+function renderDetail(){const e=state.selected;if(!e){$('detail').hidden=true;$('detail-empty').hidden=false;return}$('detail-empty').hidden=true;$('detail').hidden=false;const s=String(e.Status).toLowerCase();const host=`${e.Subdomain}.${state.baseDomain}`;$('detail').innerHTML=`<div class="detail"><div class="detail-title"><div><h2>${esc(e.Project)}</h2><div class="detail-branch">âŽ‡ ${esc(e.Branch)}</div></div><span class="badge ${statusClass(e.Status)}">${esc(e.Status)}</span></div><div class="actions"><a class="button primary" href="https://${esc(host)}" target="_blank" rel="noreferrer">Open preview â†—</a>${s==='sleeping'?'<button class="button secondary" data-action="wake">Wake</button>':s==='ready'?'<button class="button secondary" data-action="sleep">Sleep</button>':''}<button class="button danger" data-action="destroy">Destroy</button></div><div class="facts"><div class="fact"><span>Environment ID</span><b>${esc(e.ID)}</b></div><div class="fact"><span>Preview host</span><b>${esc(host)}</b></div><div class="fact"><span>Artifact</span><b>${esc(e.ArtifactRef)}</b></div><div class="fact"><span>Expires</span><b>${esc(e.TTLExpiresAt||'No expiry')}</b></div><div class="fact"><span>Created</span><b>${esc(e.CreatedAt)}</b></div><div class="fact"><span>Updated</span><b>${esc(e.UpdatedAt)}</b></div></div><div class="logs-head"><h3>Deployment logs</h3><button class="button secondary small" id="log-refresh">Refresh</button></div><pre id="logs" class="logs">Loading logsâ€¦</pre></div>`;document.querySelectorAll('[data-action]').forEach(b=>b.onclick=()=>action(b.dataset.action));$('log-refresh').onclick=loadLogs}
+async function action(kind){if(!state.selected)return;const labels={sleep:'sleep this environment',wake:'wake this environment',destroy:'destroy this environment'};if(!confirm(`Are you sure you want to ${labels[kind]}?`))return;try{const r=await api(`/environments/${encodeURIComponent(state.selected.ID)}/${kind}`,{method:'POST'});if(kind==='destroy'){$('detail-empty').hidden=false;$('detail').hidden=true;state.selected=null}else{state.selected=await r.json()}toast(`${kind[0].toUpperCase()+kind.slice(1)} requested`);await load()}catch(e){toast(e.message)}}
+async function loadLogs(){if(!state.selected)return;try{const r=await api(`/environments/${encodeURIComponent(state.selected.ID)}/logs`);$('logs').textContent=await r.text()}catch(e){if($('logs'))$('logs').textContent=e.message}}
+$('refresh').onclick=load;$('filter').oninput=renderList;$('settings').onclick=openToken;
+$('token-form').onsubmit=e=>{e.preventDefault();const value=$('token').value.trim();if(!value)return;state.token=value;if($('remember').checked)localStorage.setItem('ramify.token',value);else localStorage.removeItem('ramify.token');$('token-dialog').close();load()};
+fetch('/dashboard/config').then(r=>r.json()).then(c=>{state.baseDomain=c.base_domain;load();state.refreshTimer=setInterval(load,5000);state.logsTimer=setInterval(loadLogs,4000)});if(!state.token)setTimeout(openToken,250);
+
+
+  </script>
 </body>
 </html>
