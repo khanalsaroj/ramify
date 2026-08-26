@@ -10,7 +10,7 @@ one or more of those.
 | Interface | Built-in implementation |
 |---|---|
 | `GitProvider` | `providers/git/github`, `providers/git/gitlab`, `providers/git/bitbucket` |
-| `DeployProvider` | `providers/deploy/compose` (SSH + `docker compose`) |
+| `DeployProvider` | `providers/deploy/compose` (SSH + `docker compose`), `providers/deploy/kubernetes` (`kubectl`) |
 | `DNSProvider` | `providers/dns/cloudflare`, `providers/dns/route53`, `providers/dns/googlecloud`, `providers/dns/digitalocean` |
 | `CertificateProvider` | `providers/cert/acme` (Let's Encrypt via DNS-01) |
 | `NotifierProvider` | `providers/notify/githubcomment` |
@@ -131,6 +131,30 @@ func TestComposeContractLive(t *testing.T) {
 Point this at a disposable host (or the same `test/e2e` fake-`docker`-shim sshd
 image, run standalone) — the contract suite really does run `docker compose up`
 and `down` against whatever `compose_file` you configure.
+
+### Kubernetes
+
+Set `deploy.provider: kubernetes`. Ramify invokes the local `kubectl` binary using
+the configured kubeconfig/context and creates a Deployment, Service, and Ingress
+for each preview. The configured `deploy.dns_target` should be the address of the
+cluster ingress/load-balancer entry point. Container and Service ports default to
+`8080` and can be changed with `kubernetes_container_port` and
+`kubernetes_service_port`.
+
+```yaml
+deploy:
+  provider: kubernetes
+  dns_target: 203.0.113.20
+  kubernetes_namespace: ramify
+  kubernetes_context: production
+  kubernetes_ingress_class: nginx
+  kubernetes_container_port: 8080
+  kubernetes_service_port: 80
+```
+
+The Kubernetes provider uses the same idempotent Apply/Sleep/Wake/Destroy
+contract as Compose. It expects `kubectl` and cluster credentials to be available
+on the machine running `ramifyd`.
 
 ### Git hosting providers
 

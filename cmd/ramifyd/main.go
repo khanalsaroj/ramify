@@ -28,6 +28,7 @@ import (
 	"github.com/khanalsaroj/ramify/internal/store"
 	"github.com/khanalsaroj/ramify/providers/cert/acme"
 	"github.com/khanalsaroj/ramify/providers/deploy/compose"
+	"github.com/khanalsaroj/ramify/providers/deploy/kubernetes"
 	"github.com/khanalsaroj/ramify/providers/dns/cloudflare"
 	"github.com/khanalsaroj/ramify/providers/dns/digitalocean"
 	"github.com/khanalsaroj/ramify/providers/dns/googlecloud"
@@ -108,7 +109,9 @@ func run(configPath string, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("constructing deploy provider: %w", err)
 	}
-	deployProvider.SetCertificateDir(cfg.Deploy.CertificateDir)
+	if setter, ok := deployProvider.(interface{ SetCertificateDir(string) }); ok {
+		setter.SetCertificateDir(cfg.Deploy.CertificateDir)
+	}
 
 	certProvider, err := acme.New(acme.Config{
 		CADirURL:    cfg.ACME.CADirURL,
@@ -255,7 +258,19 @@ func runReaperLoop(ctx context.Context, reaper *core.Reaper, interval time.Durat
 	}
 }
 
-func newDeployProvider(cfg *config.Config, logger *slog.Logger) (*compose.Provider, error) {
+func newDeployProvider(cfg *config.Config, logger *slog.Logger) (providerapi.DeployProvider, error) {
+	provider := cfg.Deploy.Provider
+	if provider == "" {
+		provider = "compose"
+	}
+	if provider == "kubernetes" {
+		return kubernetes.New(cfg.Deploy.KubernetesNamespace, cfg.BaseDomain, cfg.Deploy.DNSTarget,
+			cfg.Deploy.KubernetesIngressClass, cfg.Deploy.KubernetesKubeconfig, cfg.Deploy.KubernetesContext,
+			cfg.Deploy.KubernetesContainerPort, cfg.Deploy.KubernetesServicePort), nil
+	}
+	if provider != "compose" {
+		return nil, fmt.Errorf("unsupported deploy provider %q", provider)
+	}
 	keyBytes, err := os.ReadFile(cfg.Deploy.SSHPrivateKeyPath) //nolint:gosec // operator-supplied, config-driven path
 	if err != nil {
 		return nil, fmt.Errorf("reading ssh private key: %w", err)

@@ -32,7 +32,8 @@ together, automatically.
   provider, real certificates via ACME DNS-01 — not a proxy tunnel into an
   environment someone else routes.
 - **Deploys to infrastructure you already run.** SSH + `docker compose` on a VPS
-  you control. No hosted control plane, nothing about your app leaves your infra.
+  or Kubernetes via `kubectl`. No hosted control plane, nothing about your app
+  leaves your infra.
 - **Crash-safe by construction.** Every reconciliation event is logged *before*
   any provider is called. Restart after a crash and `ramifyd` replays whatever
   didn't finish — nothing is silently lost or double-applied.
@@ -85,7 +86,7 @@ under `providers/` is a concrete implementation of one of them.
 flowchart TB
     Core["Core<br/>reconciler · reaper · sqlite store<br/><i>idempotent apply · crash-safe event log · TTL enforcement</i>"]
     GH["GitProvider<br/>GitHub webhooks + PR comments"]
-    DP["DeployProvider<br/>SSH + Docker Compose"]
+    DP["DeployProvider<br/>SSH + Docker Compose or Kubernetes"]
     DNS["DNSProvider<br/>Cloudflare · Route 53 · Google Cloud DNS · DigitalOcean"]
     CERT["CertificateProvider<br/>ACME / Let's Encrypt DNS-01"]
     NOT["NotifierProvider<br/>PR status comments"]
@@ -277,7 +278,7 @@ internal/config/    YAML config loader ($NAME secret resolution, validation)
 internal/metrics/   process counters served in Prometheus text format
 providers/providerapi/   the five provider interfaces core depends on
 providers/git/github/    GitProvider — webhooks, PR comments
-providers/deploy/compose/  DeployProvider — SSH + docker compose
+providers/deploy/           DeployProvider — SSH + docker compose or Kubernetes
 providers/dns/             DNSProvider — Cloudflare, Route 53, Google Cloud DNS, DigitalOcean
 providers/cert/acme/       CertificateProvider — Let's Encrypt via DNS-01
 providers/notify/githubcomment/  NotifierProvider — PR status comments
@@ -300,8 +301,7 @@ through create → verify → destroy against a live local ACME CA (Pebble), a l
 DNS server (CoreDNS), an SSH deploy target, and a mock GitHub API. The CI badge
 at the top of this README is the current answer to whether it passes.
 
-Not built yet, and intentionally out of scope for now: Kubernetes as a deploy
-target, *automatic*
+Not built yet, and intentionally out of scope for now: *automatic*
 idle-detection and sleep (manual sleep/wake already exists on the control API), a
 web dashboard, and an out-of-process plugin protocol.
 

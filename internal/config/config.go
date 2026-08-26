@@ -65,6 +65,7 @@ type GitConfig struct {
 
 // DeployConfig configures providers/deploy/compose.
 type DeployConfig struct {
+	Provider          string `yaml:"provider"`
 	SSHAddr           string `yaml:"ssh_addr"`
 	SSHUser           string `yaml:"ssh_user"`
 	SSHPrivateKeyPath string `yaml:"ssh_private_key_path"`
@@ -72,10 +73,16 @@ type DeployConfig struct {
 	// OpenSSH-format known_hosts file. Left empty, the host key is not verified —
 	// acceptable only for a first connection to a host you've provisioned
 	// yourself; ramify doctor warns if this is unset.
-	SSHKnownHostsPath string `yaml:"ssh_known_hosts_path,omitempty"`
-	ComposeFile       string `yaml:"compose_file"`
-	DNSTarget         string `yaml:"dns_target"`
-	CertificateDir    string `yaml:"certificate_dir,omitempty"`
+	SSHKnownHostsPath       string `yaml:"ssh_known_hosts_path,omitempty"`
+	ComposeFile             string `yaml:"compose_file"`
+	DNSTarget               string `yaml:"dns_target"`
+	CertificateDir          string `yaml:"certificate_dir,omitempty"`
+	KubernetesNamespace     string `yaml:"kubernetes_namespace,omitempty"`
+	KubernetesContext       string `yaml:"kubernetes_context,omitempty"`
+	KubernetesKubeconfig    string `yaml:"kubernetes_kubeconfig,omitempty"`
+	KubernetesIngressClass  string `yaml:"kubernetes_ingress_class,omitempty"`
+	KubernetesContainerPort int    `yaml:"kubernetes_container_port,omitempty"`
+	KubernetesServicePort   int    `yaml:"kubernetes_service_port,omitempty"`
 }
 
 // DNSConfig configures providers/dns/cloudflare.
@@ -192,6 +199,10 @@ func Load(path string) (*Config, error) {
 // Validate reports whether every field Ramify requires at startup is present.
 func (c Config) Validate() error {
 	var missing []string
+	deployProvider := c.Deploy.Provider
+	if deployProvider == "" {
+		deployProvider = "compose"
+	}
 	gitProvider := c.Git.Provider
 	gitToken := c.Git.Token
 	gitSecret := c.Git.WebhookSecret
@@ -225,17 +236,25 @@ func (c Config) Validate() error {
 	if gitProvider != "github" && gitProvider != "gitlab" && gitProvider != "bitbucket" {
 		missing = append(missing, "git.provider (github, gitlab, or bitbucket)")
 	}
-	if c.Deploy.SSHAddr == "" {
-		missing = append(missing, "deploy.ssh_addr")
+	if deployProvider == "compose" {
+		if c.Deploy.SSHAddr == "" {
+			missing = append(missing, "deploy.ssh_addr")
+		}
+		if c.Deploy.ComposeFile == "" {
+			missing = append(missing, "deploy.compose_file")
+		}
+		if c.Deploy.SSHPrivateKeyPath == "" {
+			missing = append(missing, "deploy.ssh_private_key_path")
+		}
 	}
-	if c.Deploy.ComposeFile == "" {
-		missing = append(missing, "deploy.compose_file")
-	}
-	if c.Deploy.SSHPrivateKeyPath == "" {
-		missing = append(missing, "deploy.ssh_private_key_path")
+	if deployProvider != "compose" && deployProvider != "kubernetes" {
+		missing = append(missing, "deploy.provider (compose or kubernetes)")
 	}
 	if c.Deploy.DNSTarget == "" {
 		missing = append(missing, "deploy.dns_target")
+	}
+	if deployProvider == "kubernetes" && c.Deploy.KubernetesNamespace == "" {
+		missing = append(missing, "deploy.kubernetes_namespace")
 	}
 	if c.DNS.Zone == "" {
 		missing = append(missing, "dns.zone")

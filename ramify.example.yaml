@@ -38,6 +38,8 @@ git:
   base_url: ""
 
 deploy:
+  # Supported values: compose or kubernetes.
+  provider: compose
   # The host Ramify SSHes to in order to run `docker compose`.
   ssh_addr: deploy-host.example.com:22
   ssh_user: ramify
@@ -51,6 +53,13 @@ deploy:
   dns_target: 203.0.113.10
   # Optional remote directory mounted/read by the reverse proxy for TLS files.
   certificate_dir: /srv/ramify/certificates
+  # Kubernetes options (used when provider is kubernetes).
+  kubernetes_namespace: ramify
+  kubernetes_context: ""
+  kubernetes_kubeconfig: ""
+  kubernetes_ingress_class: nginx
+  kubernetes_container_port: 8080
+  kubernetes_service_port: 8080
 
 dns:
   # Supported values: cloudflare, route53, googlecloud, digitalocean.
