@@ -423,9 +423,9 @@ footer a:hover{color:var(--accent);}
         <div class="hub-core">Reconciler · Reaper<span class="sub">idempotent apply · TTL enforcement · crash-safe event log</span></div>
         <div class="bus"></div>
         <div class="provider-row">
-          <div class="provider-card"><div class="name">GitProvider</div><div class="impl">GitHub webhooks + PR comments</div></div>
-          <div class="provider-card"><div class="name">DeployProvider</div><div class="impl">SSH + Docker Compose</div></div>
-          <div class="provider-card"><div class="name">DNSProvider</div><div class="impl">Cloudflare, TXT-owned records</div></div>
+          <div class="provider-card"><div class="name">GitProvider</div><div class="impl">GitHub, GitLab + Bitbucket</div></div>
+          <div class="provider-card"><div class="name">DeployProvider</div><div class="impl">SSH + Docker Compose or Kubernetes</div></div>
+          <div class="provider-card"><div class="name">DNSProvider</div><div class="impl">Cloudflare, Route 53, Google + DO</div></div>
           <div class="provider-card"><div class="name">CertificateProvider</div><div class="impl">ACME / Let's Encrypt DNS-01</div></div>
           <div class="provider-card"><div class="name">NotifierProvider</div><div class="impl">GitHub PR status comments</div></div>
         </div>
@@ -694,9 +694,9 @@ sudo systemctl enable --now ramifyd</code></pre>
         <table>
           <thead><tr><th>Interface</th><th>Built-in implementation</th><th>Notes</th></tr></thead>
           <tbody>
-            <tr><td><code>GitProvider</code></td><td><code>providers/git/github</code></td><td>Webhook HMAC verification, PR event parsing</td></tr>
-            <tr><td><code>DeployProvider</code></td><td><code>providers/deploy/compose</code></td><td>SSH + <code>docker compose</code></td></tr>
-            <tr><td><code>DNSProvider</code></td><td><code>providers/dns/cloudflare</code></td><td>External-dns-style TXT ownership registry</td></tr>
+            <tr><td><code>GitProvider</code></td><td><code>providers/git/{github,gitlab,bitbucket}</code></td><td>Webhook verification, PR/MR event parsing</td></tr>
+            <tr><td><code>DeployProvider</code></td><td><code>providers/deploy/{compose,kubernetes}</code></td><td>SSH + <code>docker compose</code> or <code>kubectl</code></td></tr>
+            <tr><td><code>DNSProvider</code></td><td><code>providers/dns/{cloudflare,route53,googlecloud,digitalocean}</code></td><td>TXT ownership registry</td></tr>
             <tr><td><code>CertificateProvider</code></td><td><code>providers/cert/acme</code></td><td>Let's Encrypt via ACME DNS-01, shares the DNS provider</td></tr>
             <tr><td><code>NotifierProvider</code></td><td><code>providers/notify/githubcomment</code></td><td>Templated PR status comments</td></tr>
           </tbody>
@@ -766,6 +766,26 @@ docker compose -f test/e2e/docker-compose.dev.yml down --volumes</code></pre>
         </table>
       </div>
 
+      <h3 style="margin-top:30px;">The operational dashboard</h3>
+      <p class="muted">Set <code>server.tcp_addr</code> and <code>ramifyd</code> serves a dashboard at
+      <code>/dashboard/</code>, embedded in the binary with no external assets, so it works on an air-gapped
+      network as well as it does on a laptop.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Surface</th><th>What it does</th></tr></thead>
+          <tbody>
+            <tr><td>Environment list</td><td>Live status, TTL countdown, and last-updated time, filtered by project, branch, or status</td></tr>
+            <tr><td>Detail panel</td><td>Preview host, artifact reference, deploy ref, and the full lifecycle timestamps</td></tr>
+            <tr><td>Actions</td><td>Sleep, wake, and destroy — destroy requires the branch name typed back</td></tr>
+            <tr><td>Logs</td><td>The deployed container's logs, tailed automatically, pausing when you scroll back</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="muted" style="margin-top:14px;">The page prompts for the same <code>server.tcp_token</code> the CLI
+      uses and keeps it in browser storage only. Every route that reads or changes an environment stays
+      bearer-authenticated; only the static page itself is served unauthenticated, because a browser cannot attach
+      an <code>Authorization</code> header to a top-level navigation.</p>
+
       <h3 style="margin-top:30px;">Durable events, retries, and dead-lettering</h3>
       <p class="muted">A webhook delivery is written to the store <em>before</em> it is acknowledged, and
       deduplicated by its <code>X-GitHub-Delivery</code> header, so a GitHub redelivery can never apply twice.
@@ -797,7 +817,8 @@ docker compose -f test/e2e/docker-compose.dev.yml down --volumes</code></pre>
         <li>Configure <code>deploy.ssh_known_hosts_path</code> — pin the host key rather than trusting it blindly.</li>
         <li>Keep the unix socket at mode <code>0660</code> with a dedicated group.</li>
         <li>Require <code>server.tcp_token</code> whenever <code>server.tcp_addr</code> is set, and put remote TCP access behind TLS or mTLS.</li>
-        <li>Use zone-scoped Cloudflare tokens and repository-scoped GitHub credentials.</li>
+        <li>Use zone-scoped DNS tokens and repository-scoped Git credentials, whichever provider you configure.</li>
+        <li>Treat <code>/dashboard/</code> as public: the page and the base domain it reads are unauthenticated, so put the TCP listener on a trusted network even though every environment route needs the token.</li>
         <li>Protect the SQLite database and the ACME storage directory with mode <code>0700</code>/<code>0600</code>.</li>
       </ul>
       <p class="muted" style="margin-top:14px;">Full detail:
@@ -873,21 +894,24 @@ EOF</code></pre>
       </details>
       <details class="faq-item">
         <summary>Does it support Kubernetes as a deploy target?</summary>
-        <p>Not in the MVP — the only <code>DeployProvider</code> shipped is SSH + Docker Compose. The interface
-        is designed so a Kubernetes provider could be added without touching the core.</p>
+        <p>Yes. Set <code>deploy.provider: kubernetes</code>. Ramify creates a Deployment, Service,
+        and Ingress for each preview through the local <code>kubectl</code> context.</p>
       </details>
       <details class="faq-item">
         <summary>GitLab or Bitbucket instead of GitHub?</summary>
-        <p>Not yet — GitHub is the only <code>GitProvider</code> in the MVP.</p>
+        <p>Yes. Configure <code>git.provider</code> as <code>github</code>, <code>gitlab</code>, or <code>bitbucket</code>.</p>
       </details>
       <details class="faq-item">
         <summary>DNS providers other than Cloudflare?</summary>
-        <p>Not yet — Route 53, Google Cloud DNS, and DigitalOcean DNS are explicitly out of scope for the MVP,
-        deferred behind the same <code>DNSProvider</code> interface Cloudflare implements.</p>
+        <p>Yes. Configure <code>dns.provider</code> as <code>cloudflare</code>, <code>route53</code>,
+        <code>googlecloud</code>, or <code>digitalocean</code>.</p>
       </details>
       <details class="faq-item">
         <summary>Is there a web dashboard?</summary>
-        <p>No, by design — the <code>ramify</code> CLI plus structured logs are the whole interface for the MVP.</p>
+        <p>Yes. <code>ramifyd</code> serves one at <code>/dashboard/</code> on the optional TCP listener, embedded
+        in the binary so there is nothing extra to deploy. It lists and filters environments, opens preview URLs,
+        performs sleep/wake/destroy, and tails deployment logs. The CLI remains the complete interface — the
+        dashboard is a view onto the same control API, not a second source of truth.</p>
       </details>
       <details class="faq-item">
         <summary>What happens if ramifyd crashes mid-deploy?</summary>

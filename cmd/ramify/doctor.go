@@ -37,7 +37,7 @@ func newDoctorCmd() *cobra.Command {
 			printLine(cmd.OutOrStdout(), "[ OK ] config file valid")
 
 			checks := []doctorCheck{
-				checkCloudflareToken(cfg),
+				checkDNSProvider(cfg),
 				checkSSHReachable(cfg),
 				checkGitHubWebhookSecret(cfg),
 				checkACMEDirectoryReachable(cfg),
@@ -61,6 +61,21 @@ func newDoctorCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&configPath, "config", "ramify.yaml", "path to ramify.yaml")
 	return cmd
+}
+
+func checkDNSProvider(cfg *config.Config) doctorCheck {
+	switch cfg.DNS.Provider {
+	case "cloudflare":
+		return checkCloudflareToken(cfg)
+	case "googlecloud":
+		return doctorCheck{name: "Google Cloud DNS configured", ok: cfg.DNS.Project != "" && cfg.DNS.ZoneID != "", detail: "uses Application Default Credentials"}
+	case "route53":
+		return doctorCheck{name: "Route 53 configured", ok: cfg.DNS.Zone != "", detail: "uses the AWS SDK credential chain"}
+	case "digitalocean":
+		return doctorCheck{name: "DigitalOcean DNS token configured", ok: cfg.DNS.APIToken != "", detail: "token is configured"}
+	default:
+		return doctorCheck{name: "DNS provider configured", ok: false, detail: "unsupported provider " + cfg.DNS.Provider}
+	}
 }
 
 // checkCloudflareToken verifies the configured token can at least resolve the

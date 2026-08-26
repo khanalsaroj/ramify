@@ -6,6 +6,7 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -67,6 +68,18 @@ func TestServeUnixSocket(t *testing.T) {
 
 	cancel()
 	require.NoError(t, <-done)
+}
+
+func TestDashboardAssetsAreServed(t *testing.T) {
+	h := newTestHarness(t)
+
+	for _, path := range []string{"/dashboard/", "/dashboard/config"} {
+		req, err := http.NewRequest(http.MethodGet, path, nil)
+		require.NoError(t, err)
+		rec := httptest.NewRecorder()
+		h.server.ServeHTTP(rec, req)
+		require.Equal(t, http.StatusOK, rec.Code, path)
+	}
 }
 
 func TestServeTCPRequiresBearerToken(t *testing.T) {

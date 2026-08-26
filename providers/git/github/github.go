@@ -234,3 +234,11 @@ func splitProject(project string) (owner, repo string, err error) {
 	}
 	return parts[0], parts[1], nil
 }
+
+// SignatureHeader is the request header carrying the HMAC-SHA256 signature that
+// ParseWebhook verifies.
+func (p *Provider) SignatureHeader() string { return "X-Hub-Signature-256" }
+
+// DeliveryHeader is the request header carrying GitHub's unique delivery ID, used
+// to deduplicate redelivered webhooks.
+func (p *Provider) DeliveryHeader() string { return "X-GitHub-Delivery" }

@@ -28,9 +28,16 @@ import (
 	"github.com/khanalsaroj/ramify/internal/store"
 	"github.com/khanalsaroj/ramify/providers/cert/acme"
 	"github.com/khanalsaroj/ramify/providers/deploy/compose"
+	"github.com/khanalsaroj/ramify/providers/deploy/kubernetes"
 	"github.com/khanalsaroj/ramify/providers/dns/cloudflare"
+	"github.com/khanalsaroj/ramify/providers/dns/digitalocean"
+	"github.com/khanalsaroj/ramify/providers/dns/googlecloud"
+	"github.com/khanalsaroj/ramify/providers/dns/route53"
+	"github.com/khanalsaroj/ramify/providers/git/bitbucket"
 	"github.com/khanalsaroj/ramify/providers/git/github"
+	"github.com/khanalsaroj/ramify/providers/git/gitlab"
 	"github.com/khanalsaroj/ramify/providers/notify/githubcomment"
+	"github.com/khanalsaroj/ramify/providers/providerapi"
 )
 
 // version is the ramifyd build version, overridden at build time via -ldflags.
@@ -88,18 +95,23 @@ func run(configPath string, logger *slog.Logger) error {
 		}
 	}()
 
-	gitProvider := github.NewWithToken(cfg.GitHub.Token, cfg.GitHub.WebhookSecret)
-
-	dnsProvider, err := cloudflare.New(cfg.DNS.CloudflareAPIToken)
+	gitProvider, err := newGitProvider(cfg)
 	if err != nil {
-		return fmt.Errorf("constructing cloudflare provider: %w", err)
+		return err
+	}
+
+	dnsProvider, err := newDNSProvider(ctx, cfg)
+	if err != nil {
+		return fmt.Errorf("constructing dns provider: %w", err)
 	}
 
 	deployProvider, err := newDeployProvider(cfg, logger)
 	if err != nil {
 		return fmt.Errorf("constructing deploy provider: %w", err)
 	}
-	deployProvider.SetCertificateDir(cfg.Deploy.CertificateDir)
+	if setter, ok := deployProvider.(interface{ SetCertificateDir(string) }); ok {
+		setter.SetCertificateDir(cfg.Deploy.CertificateDir)
+	}
 
 	certProvider, err := acme.New(acme.Config{
 		CADirURL:    cfg.ACME.CADirURL,
@@ -154,6 +166,34 @@ func run(configPath string, logger *slog.Logger) error {
 		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
+}
+
+func newDNSProvider(ctx context.Context, cfg *config.Config) (providerapi.DNSProvider, error) {
+	switch cfg.DNS.Provider {
+	case "cloudflare":
+		return cloudflare.New(cfg.DNS.APIToken)
+	case "route53":
+		return route53.New(ctx, cfg.DNS.ZoneID)
+	case "googlecloud":
+		return googlecloud.New(ctx, cfg.DNS.Project, cfg.DNS.ZoneID)
+	case "digitalocean":
+		return digitalocean.New(cfg.DNS.APIToken, cfg.DNS.Zone), nil
+	default:
+		return nil, fmt.Errorf("unsupported dns provider %q", cfg.DNS.Provider)
+	}
+}
+
+func newGitProvider(cfg *config.Config) (providerapi.GitProvider, error) {
+	switch cfg.Git.Provider {
+	case "github":
+		return github.NewWithToken(cfg.Git.Token, cfg.Git.WebhookSecret), nil
+	case "gitlab":
+		return gitlab.New(cfg.Git.Token, cfg.Git.WebhookSecret, cfg.Git.BaseURL), nil
+	case "bitbucket":
+		return bitbucket.New(cfg.Git.Token, cfg.Git.WebhookSecret, cfg.Git.BaseURL), nil
+	default:
+		return nil, fmt.Errorf("unsupported git provider %q", cfg.Git.Provider)
+	}
 }
 
 func runEventLoop(ctx context.Context, st store.Store, reconciler *core.Reconciler, logger *slog.Logger, metricSet *metrics.Metrics, eventRetention time.Duration) {
@@ -218,7 +258,19 @@ func runReaperLoop(ctx context.Context, reaper *core.Reaper, interval time.Durat
 	}
 }
 
-func newDeployProvider(cfg *config.Config, logger *slog.Logger) (*compose.Provider, error) {
+func newDeployProvider(cfg *config.Config, logger *slog.Logger) (providerapi.DeployProvider, error) {
+	provider := cfg.Deploy.Provider
+	if provider == "" {
+		provider = "compose"
+	}
+	if provider == "kubernetes" {
+		return kubernetes.New(cfg.Deploy.KubernetesNamespace, cfg.BaseDomain, cfg.Deploy.DNSTarget,
+			cfg.Deploy.KubernetesIngressClass, cfg.Deploy.KubernetesKubeconfig, cfg.Deploy.KubernetesContext,
+			cfg.Deploy.KubernetesContainerPort, cfg.Deploy.KubernetesServicePort), nil
+	}
+	if provider != "compose" {
+		return nil, fmt.Errorf("unsupported deploy provider %q", provider)
+	}
 	keyBytes, err := os.ReadFile(cfg.Deploy.SSHPrivateKeyPath) //nolint:gosec // operator-supplied, config-driven path
 	if err != nil {
 		return nil, fmt.Errorf("reading ssh private key: %w", err)

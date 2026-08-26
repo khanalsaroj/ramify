@@ -1,0 +1,1534 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="robots" content="noindex,nofollow">
+<title>Ramify Control Room</title>
+<style>
+/* ---------------------------------------------------------------- tokens -- */
+:root {
+  --bg:            #f6f7f9;
+  --bg-elev:       #ffffff;
+  --bg-sunken:     #eceef2;
+  --bg-code:       #f2f4f7;
+  --line:          #dfe3ea;
+  --line-strong:   #c6ccd8;
+  --text:          #12161d;
+  --text-soft:     #4b5563;
+  --text-faint:    #7b8494;
+
+  --accent:        #0d7d63;
+  --accent-hover:  #0a6250;
+  --accent-ink:    #ffffff;
+  --accent-wash:   #e2f3ee;
+
+  --ok:            #0d7d63;
+  --ok-wash:       #e2f3ee;
+  --busy:          #9a6400;
+  --busy-wash:     #fdf0d9;
+  --bad:           #b4241f;
+  --bad-wash:      #fce9e8;
+  --rest:          #4b5db8;
+  --rest-wash:     #e9ebfa;
+  --idle:          #6b7280;
+  --idle-wash:     #eceef2;
+
+  --focus:         #0d7d63;
+  --shadow-sm:     0 1px 2px rgba(16, 24, 40, .06), 0 1px 3px rgba(16, 24, 40, .04);
+  --shadow-md:     0 4px 12px rgba(16, 24, 40, .08), 0 1px 3px rgba(16, 24, 40, .04);
+  --shadow-lg:     0 24px 48px -12px rgba(16, 24, 40, .22);
+
+  --radius:        10px;
+  --radius-sm:     7px;
+  --radius-lg:     14px;
+
+  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg:          #0c0f14;
+    --bg-elev:     #141922;
+    --bg-sunken:   #0f131a;
+    --bg-code:     #0a0d12;
+    --line:        #232a36;
+    --line-strong: #333c4c;
+    --text:        #e8edf4;
+    --text-soft:   #a5b0c0;
+    --text-faint:  #78849a;
+
+    --accent:      #3ddab0;
+    --accent-hover:#63e5c2;
+    --accent-ink:  #04140f;
+    --accent-wash: #12312a;
+
+    --ok:          #3ddab0;
+    --ok-wash:     #12312a;
+    --busy:        #f0b64d;
+    --busy-wash:   #33270f;
+    --bad:         #ff8b84;
+    --bad-wash:    #3a1a1a;
+    --rest:        #93a4ff;
+    --rest-wash:   #1e2340;
+    --idle:        #8b95a6;
+    --idle-wash:   #1b212b;
+
+    --focus:       #3ddab0;
+    --shadow-sm:   0 1px 2px rgba(0, 0, 0, .5);
+    --shadow-md:   0 4px 14px rgba(0, 0, 0, .45);
+    --shadow-lg:   0 24px 48px -12px rgba(0, 0, 0, .7);
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg:          #0c0f14;
+  --bg-elev:     #141922;
+  --bg-sunken:   #0f131a;
+  --bg-code:     #0a0d12;
+  --line:        #232a36;
+  --line-strong: #333c4c;
+  --text:        #e8edf4;
+  --text-soft:   #a5b0c0;
+  --text-faint:  #78849a;
+
+  --accent:      #3ddab0;
+  --accent-hover:#63e5c2;
+  --accent-ink:  #04140f;
+  --accent-wash: #12312a;
+
+  --ok:          #3ddab0;
+  --ok-wash:     #12312a;
+  --busy:        #f0b64d;
+  --busy-wash:   #33270f;
+  --bad:         #ff8b84;
+  --bad-wash:    #3a1a1a;
+  --rest:        #93a4ff;
+  --rest-wash:   #1e2340;
+  --idle:        #8b95a6;
+  --idle-wash:   #1b212b;
+
+  --focus:       #3ddab0;
+  --shadow-sm:   0 1px 2px rgba(0, 0, 0, .5);
+  --shadow-md:   0 4px 14px rgba(0, 0, 0, .45);
+  --shadow-lg:   0 24px 48px -12px rgba(0, 0, 0, .7);
+}
+
+/* ------------------------------------------------------------------ base -- */
+*, *::before, *::after { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text);
+  font: 400 14px/1.55 var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: -.015em; }
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.icon { width: 1em; height: 1em; flex: none; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.num { font-variant-numeric: tabular-nums; }
+
+/* ---------------------------------------------------------------- topbar -- */
+.topbar {
+  position: sticky; top: 0; z-index: 20;
+  display: flex; align-items: center; gap: 16px;
+  padding: 0 20px; height: 58px;
+  background: color-mix(in srgb, var(--bg-elev) 88%, transparent);
+  border-bottom: 1px solid var(--line);
+  backdrop-filter: saturate(180%) blur(12px);
+}
+
+.brand { display: flex; align-items: center; gap: 9px; font-weight: 650; letter-spacing: -.02em; }
+
+.brand-mark {
+  display: grid; place-items: center;
+  width: 26px; height: 26px; border-radius: 8px;
+  background: var(--accent); color: var(--accent-ink);
+  font-size: 14px; font-weight: 800;
+}
+
+.brand-tag {
+  font-size: 10px; font-weight: 600; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--text-faint); padding-left: 9px; margin-left: 3px;
+  border-left: 1px solid var(--line-strong);
+}
+
+.topbar-spacer { flex: 1; }
+
+.status-pill {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 5px 11px 5px 9px; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--bg-elev);
+  font-size: 12px; font-weight: 550; color: var(--text-soft);
+  white-space: nowrap;
+}
+.status-pill .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--idle); flex: none; }
+.status-pill[data-state="live"]    { color: var(--ok);  border-color: color-mix(in srgb, var(--ok) 35%, var(--line)); }
+.status-pill[data-state="live"]  .dot { background: var(--ok); box-shadow: 0 0 0 3px var(--ok-wash); }
+.status-pill[data-state="error"]   { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 35%, var(--line)); }
+.status-pill[data-state="error"] .dot { background: var(--bad); box-shadow: 0 0 0 3px var(--bad-wash); }
+.status-pill[data-state="paused"] .dot { background: var(--busy); }
+
+/* --------------------------------------------------------------- buttons -- */
+button, input, select { font: inherit; color: inherit; }
+
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 7px 13px; border-radius: var(--radius-sm);
+  border: 1px solid var(--line-strong); background: var(--bg-elev); color: var(--text);
+  font-size: 13px; font-weight: 550; cursor: pointer; white-space: nowrap;
+  text-decoration: none;
+  transition: background .12s ease, border-color .12s ease, color .12s ease;
+}
+.btn:hover:not(:disabled)  { background: var(--bg-sunken); border-color: var(--text-faint); }
+.btn:disabled              { opacity: .5; cursor: not-allowed; }
+.btn-primary               { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.btn-primary:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
+.btn-danger                { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 40%, var(--line)); }
+.btn-danger:hover:not(:disabled)  { background: var(--bad-wash); border-color: var(--bad); }
+.btn-sm                    { padding: 4px 9px; font-size: 12px; }
+.btn-icon                  { padding: 6px; width: 30px; height: 30px; }
+.btn-icon .icon            { width: 16px; height: 16px; }
+
+/* ---------------------------------------------------------------- layout -- */
+.shell { max-width: 1400px; margin: 0 auto; padding: 24px 20px 56px; }
+
+.stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px; }
+
+.stat {
+  background: var(--bg-elev); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 13px 15px; box-shadow: var(--shadow-sm);
+}
+.stat dt { margin: 0 0 5px; font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--text-faint); }
+.stat dd { margin: 0; font-size: 25px; font-weight: 640; line-height: 1.1; letter-spacing: -.03em; }
+.stat[data-tone="ok"]   dd { color: var(--ok); }
+.stat[data-tone="busy"] dd { color: var(--busy); }
+.stat[data-tone="bad"]  dd { color: var(--bad); }
+
+.workspace { display: grid; grid-template-columns: minmax(0, 400px) minmax(0, 1fr); gap: 16px; align-items: start; }
+
+.panel {
+  background: var(--bg-elev); border: 1px solid var(--line);
+  border-radius: var(--radius-lg); box-shadow: var(--shadow-sm); overflow: hidden;
+}
+
+.panel-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 13px 15px; border-bottom: 1px solid var(--line);
+}
+.panel-head h2 { font-size: 14px; }
+.count-badge {
+  padding: 1px 7px; border-radius: 999px; background: var(--bg-sunken);
+  border: 1px solid var(--line); font-size: 11px; font-weight: 600; color: var(--text-soft);
+}
+
+/* ---------------------------------------------------------------- filter -- */
+.filter-bar { padding: 11px 15px; border-bottom: 1px solid var(--line); }
+
+.search { position: relative; display: block; }
+.search .icon {
+  position: absolute; left: 10px; top: 50%; transform: translateY(-50%);
+  width: 15px; height: 15px; color: var(--text-faint); pointer-events: none;
+}
+.search input {
+  width: 100%; padding: 8px 62px 8px 32px;
+  border: 1px solid var(--line-strong); border-radius: var(--radius-sm);
+  background: var(--bg-sunken); font-size: 13px;
+}
+.search input::placeholder { color: var(--text-faint); }
+.search input:focus { outline: 2px solid var(--focus); outline-offset: -1px; background: var(--bg-elev); }
+.search kbd {
+  position: absolute; right: 9px; top: 50%; transform: translateY(-50%);
+  padding: 2px 6px; border: 1px solid var(--line-strong); border-radius: 5px;
+  background: var(--bg-elev); font: 500 11px var(--mono); color: var(--text-faint);
+}
+.search input:focus ~ kbd { opacity: 0; }
+
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.chip {
+  padding: 3px 10px; border-radius: 999px;
+  border: 1px solid var(--line-strong); background: transparent;
+  font-size: 12px; font-weight: 550; color: var(--text-soft); cursor: pointer;
+}
+.chip:hover { background: var(--bg-sunken); }
+.chip[aria-pressed="true"] { background: var(--accent-wash); border-color: var(--accent); color: var(--accent); }
+
+/* ------------------------------------------------------------------ list -- */
+.env-list { max-height: min(62vh, 660px); overflow-y: auto; overscroll-behavior: contain; }
+
+.env-row {
+  display: block; width: 100%; text-align: left;
+  padding: 12px 15px; border: 0; border-bottom: 1px solid var(--line);
+  border-left: 3px solid transparent;
+  background: transparent; cursor: pointer;
+  transition: background .1s ease;
+}
+.env-row:hover { background: var(--bg-sunken); }
+.env-row[aria-selected="true"] { background: var(--accent-wash); border-left-color: var(--accent); }
+.env-row:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+
+.env-top { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.env-project { flex: 1; min-width: 0; font-weight: 600; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.env-branch {
+  display: flex; align-items: center; gap: 5px; margin-bottom: 6px;
+  font: 500 12px var(--mono); color: var(--text-soft);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.env-branch .icon { width: 12px; height: 12px; color: var(--text-faint); }
+.env-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 11.5px; color: var(--text-faint); }
+.env-meta span { display: inline-flex; align-items: center; gap: 4px; }
+
+/* ---------------------------------------------------------------- badges -- */
+.badge {
+  display: inline-flex; align-items: center; gap: 5px; flex: none;
+  padding: 2px 9px 2px 7px; border-radius: 999px;
+  border: 1px solid transparent;
+  font-size: 11px; font-weight: 600; letter-spacing: .01em; text-transform: capitalize;
+}
+.badge .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex: none; }
+.badge[data-tone="ok"]   { color: var(--ok);   background: var(--ok-wash);   border-color: color-mix(in srgb, var(--ok) 26%, transparent); }
+.badge[data-tone="busy"] { color: var(--busy); background: var(--busy-wash); border-color: color-mix(in srgb, var(--busy) 26%, transparent); }
+.badge[data-tone="bad"]  { color: var(--bad);  background: var(--bad-wash);  border-color: color-mix(in srgb, var(--bad) 26%, transparent); }
+.badge[data-tone="rest"] { color: var(--rest); background: var(--rest-wash); border-color: color-mix(in srgb, var(--rest) 26%, transparent); }
+.badge[data-tone="idle"] { color: var(--idle); background: var(--idle-wash); border-color: color-mix(in srgb, var(--idle) 26%, transparent); }
+.badge[data-pulse="true"] .dot { animation: pulse 1.6s ease-in-out infinite; }
+
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .28; } }
+
+/* ---------------------------------------------------------------- detail -- */
+.detail-panel { min-height: 520px; }
+
+.detail-head { padding: 18px 20px; border-bottom: 1px solid var(--line); }
+.detail-title { display: flex; align-items: flex-start; gap: 12px; }
+.detail-title h2 { font-size: 19px; letter-spacing: -.025em; word-break: break-word; }
+.detail-sub { display: flex; align-items: center; gap: 6px; margin-top: 5px; font: 500 12.5px var(--mono); color: var(--text-soft); word-break: break-all; }
+.detail-sub .icon { width: 13px; height: 13px; color: var(--text-faint); flex: none; }
+
+.actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 15px; }
+
+.facts { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; padding: 18px 20px; }
+.fact { padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--bg-sunken); min-width: 0; }
+.fact dt { margin: 0 0 4px; font-size: 10.5px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--text-faint); }
+.fact dd { display: flex; align-items: center; gap: 6px; margin: 0; font: 500 12.5px var(--mono); word-break: break-all; }
+.fact dd > span { min-width: 0; }
+.copy { flex: none; padding: 3px; border: 0; background: transparent; color: var(--text-faint); border-radius: 4px; cursor: pointer; }
+.copy:hover { color: var(--accent); background: var(--bg-elev); }
+.copy .icon { width: 13px; height: 13px; display: block; }
+
+.logs-section { padding: 0 20px 20px; }
+.logs-head { display: flex; align-items: center; gap: 10px; margin-bottom: 9px; }
+.logs-head h3 { font-size: 13px; }
+.logs-head label { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-soft); cursor: pointer; }
+.logs-head input[type="checkbox"] { accent-color: var(--accent); margin: 0; }
+
+.logs {
+  margin: 0; padding: 14px;
+  height: 320px; overflow: auto; overscroll-behavior: contain;
+  background: var(--bg-code); border: 1px solid var(--line); border-radius: var(--radius-sm);
+  font: 12px/1.65 var(--mono); color: var(--text-soft);
+  white-space: pre-wrap; word-break: break-word;
+}
+
+/* ---------------------------------------------------------------- states -- */
+.state { display: grid; place-items: center; gap: 8px; padding: 64px 28px; text-align: center; }
+.state .icon { width: 30px; height: 30px; color: var(--text-faint); stroke-width: 1.4; }
+.state h3 { font-size: 15px; }
+.state p { margin: 0; max-width: 40ch; font-size: 13px; color: var(--text-faint); }
+
+.skeleton { padding: 12px 15px; border-bottom: 1px solid var(--line); }
+.skeleton-line { height: 9px; border-radius: 4px; background: var(--bg-sunken); animation: shimmer 1.5s ease-in-out infinite; }
+.skeleton-line + .skeleton-line { margin-top: 8px; }
+@keyframes shimmer { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
+
+/* ---------------------------------------------------------------- toasts -- */
+.toasts {
+  position: fixed; right: 18px; bottom: 18px; z-index: 60;
+  display: flex; flex-direction: column-reverse; gap: 8px; max-width: min(380px, calc(100vw - 36px));
+}
+.toast {
+  display: flex; align-items: flex-start; gap: 9px;
+  padding: 11px 13px; border-radius: var(--radius);
+  background: var(--bg-elev); border: 1px solid var(--line-strong);
+  box-shadow: var(--shadow-lg); font-size: 13px;
+  animation: toast-in .18s ease-out;
+}
+.toast .icon { width: 16px; height: 16px; margin-top: 1px; }
+.toast[data-tone="ok"]  .icon { color: var(--ok); }
+.toast[data-tone="bad"] .icon { color: var(--bad); }
+.toast[data-tone="bad"] { border-color: color-mix(in srgb, var(--bad) 45%, var(--line)); }
+@keyframes toast-in { from { opacity: 0; transform: translateY(10px); } }
+
+/* --------------------------------------------------------------- dialogs -- */
+dialog {
+  padding: 0; width: min(430px, calc(100vw - 32px));
+  border: 1px solid var(--line-strong); border-radius: var(--radius-lg);
+  background: var(--bg-elev); color: var(--text); box-shadow: var(--shadow-lg);
+}
+dialog::backdrop { background: rgba(9, 12, 17, .55); backdrop-filter: blur(3px); }
+dialog .body { padding: 20px; }
+dialog h2 { font-size: 17px; margin-bottom: 7px; }
+dialog p { margin: 0 0 4px; font-size: 13px; color: var(--text-soft); }
+dialog label { display: block; margin-top: 15px; font-size: 12px; font-weight: 550; color: var(--text-soft); }
+dialog input[type="password"], dialog input[type="text"] {
+  display: block; width: 100%; margin-top: 6px; padding: 9px 11px;
+  border: 1px solid var(--line-strong); border-radius: var(--radius-sm);
+  background: var(--bg-sunken); font-size: 13px;
+}
+dialog input:focus { outline: 2px solid var(--focus); outline-offset: -1px; }
+.check { display: flex; align-items: center; gap: 8px; margin-top: 13px; font-size: 12.5px; color: var(--text-soft); cursor: pointer; }
+.check input { accent-color: var(--accent); margin: 0; }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 14px 20px; border-top: 1px solid var(--line); background: var(--bg-sunken); }
+
+.shortcut-list { display: grid; gap: 9px; margin-top: 6px; }
+.shortcut-list div { display: flex; align-items: center; justify-content: space-between; gap: 16px; font-size: 13px; }
+.shortcut-list kbd {
+  padding: 2px 7px; border: 1px solid var(--line-strong); border-radius: 5px;
+  background: var(--bg-sunken); font: 500 11.5px var(--mono);
+}
+
+/* ------------------------------------------------------------ responsive -- */
+@media (max-width: 1000px) {
+  .workspace { grid-template-columns: 1fr; }
+  .env-list { max-height: 380px; }
+  .detail-panel { min-height: 0; }
+}
+@media (max-width: 620px) {
+  .shell { padding: 16px 12px 40px; }
+  .topbar { padding: 0 12px; gap: 10px; }
+  .brand-tag { display: none; }
+  .stats { grid-template-columns: repeat(2, 1fr); }
+  .stat dd { font-size: 21px; }
+  .status-pill .label { display: none; }
+  .status-pill { padding: 5px 8px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+}
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <defs>
+    <symbol id="i-branch" viewBox="0 0 24 24"><circle cx="6" cy="5" r="2.4"/><circle cx="6" cy="19" r="2.4"/><circle cx="18" cy="9" r="2.4"/><path d="M6 7.4v9.2M8.4 5h4.4a3 3 0 0 1 3 3v.6"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.6-3.6"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></symbol>
+    <symbol id="i-external" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9"/><path d="M18 14v4.5A1.5 1.5 0 0 1 16.5 20h-11A1.5 1.5 0 0 1 4 18.5v-11A1.5 1.5 0 0 1 5.5 6H10"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.2A8.2 8.2 0 0 1 9.8 4 8.4 8.4 0 1 0 20 14.2Z"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+    <symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="m10.9 12.1 8-8M17 6l2.5 2.5M14.5 8.5 17 11"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></symbol>
+    <symbol id="i-hourglass" viewBox="0 0 24 24"><path d="M7 3h10M7 21h10M8 3v3.5a4 4 0 0 0 1.4 3L12 12l-2.6 2.5A4 4 0 0 0 8 17.5V21M16 3v3.5a4 4 0 0 1-1.4 3L12 12l2.6 2.5a4 4 0 0 1 1.4 3V21"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 13 4.5 4.5L19 7"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 8v5M12 16.2v.1"/></symbol>
+    <symbol id="i-inbox" viewBox="0 0 24 24"><path d="M3.5 13h4l1.5 3h6l1.5-3h4"/><path d="M6 4h12l3 9v5.5A1.5 1.5 0 0 1 19.5 20h-15A1.5 1.5 0 0 1 3 18.5V13Z"/></symbol>
+    <symbol id="i-pointer" viewBox="0 0 24 24"><path d="m6 3 13 7-5.4 1.8L11 18Z"/></symbol>
+    <symbol id="i-moon-z" viewBox="0 0 24 24"><path d="M14 4h5l-5 6h5"/><path d="M20 15.5A7.5 7.5 0 0 1 10.5 6 7.7 7.7 0 1 0 20 15.5Z"/></symbol>
+    <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 4v8"/><path d="M7.1 7.1a7 7 0 1 0 9.8 0"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M10 7V4.5h4V7M6 7l1 12.5A1.5 1.5 0 0 0 8.5 21h7a1.5 1.5 0 0 0 1.5-1.5L18 7"/></symbol>
+    <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M9.7 9.4a2.4 2.4 0 0 1 4.6.8c0 1.6-2.3 2-2.3 3.3M12 17.2v.1"/></symbol>
+  </defs>
+</svg>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true">R</span>
+    <span>Ramify</span>
+    <span class="brand-tag">Control Room</span>
+  </div>
+  <div class="topbar-spacer"></div>
+  <span id="connection" class="status-pill" data-state="idle" role="status">
+    <span class="dot" aria-hidden="true"></span>
+    <span class="label">Connecting</span>
+  </span>
+  <button id="refresh" class="btn btn-sm" type="button" title="Refresh (r)">
+    <svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>
+    Refresh
+  </button>
+  <button id="theme-toggle" class="btn btn-icon" type="button" title="Toggle theme" aria-label="Toggle colour theme">
+    <svg class="icon" aria-hidden="true"><use href="#i-moon"/></svg>
+  </button>
+  <button id="open-token" class="btn btn-icon" type="button" title="API token" aria-label="Set API token">
+    <svg class="icon" aria-hidden="true"><use href="#i-key"/></svg>
+  </button>
+  <button id="open-help" class="btn btn-icon" type="button" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">
+    <svg class="icon" aria-hidden="true"><use href="#i-help"/></svg>
+  </button>
+</header>
+
+<main class="shell">
+  <dl class="stats">
+    <div class="stat"><dt>Environments</dt><dd id="stat-total" class="num">&mdash;</dd></div>
+    <div class="stat" data-tone="ok"><dt>Ready</dt><dd id="stat-ready" class="num">&mdash;</dd></div>
+    <div class="stat" data-tone="busy"><dt>In progress</dt><dd id="stat-busy" class="num">&mdash;</dd></div>
+    <div class="stat" data-tone="bad"><dt>Failed</dt><dd id="stat-failed" class="num">&mdash;</dd></div>
+  </dl>
+
+  <div class="workspace">
+    <section class="panel" aria-labelledby="list-heading">
+      <div class="panel-head">
+        <h2 id="list-heading">Environments</h2>
+        <span id="list-count" class="count-badge">0</span>
+      </div>
+
+      <div class="filter-bar">
+        <label class="search">
+          <span class="sr-only">Filter environments</span>
+          <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
+          <input id="filter" type="search" placeholder="Filter project or branch" autocomplete="off" spellcheck="false">
+          <kbd aria-hidden="true">/</kbd>
+        </label>
+        <div id="chips" class="chips" role="group" aria-label="Filter by status"></div>
+      </div>
+
+      <div id="env-list" class="env-list" role="listbox" aria-labelledby="list-heading" tabindex="-1"></div>
+    </section>
+
+    <section class="panel detail-panel" aria-labelledby="detail-heading">
+      <h2 id="detail-heading" class="sr-only">Environment detail</h2>
+      <div id="detail"></div>
+    </section>
+  </div>
+</main>
+
+<div id="toasts" class="toasts" role="region" aria-live="polite" aria-label="Notifications"></div>
+
+<dialog id="token-dialog" aria-labelledby="token-title">
+  <form method="dialog" id="token-form">
+    <div class="body">
+      <h2 id="token-title">Connect to Ramify</h2>
+      <p>Enter the bearer token configured as <code>server.tcp_token</code>. It is kept in this browser and sent only to this daemon.</p>
+      <label for="token-input">API token</label>
+      <input id="token-input" type="password" autocomplete="off" spellcheck="false" placeholder="Bearer token">
+      <label class="check" for="token-remember">
+        <input id="token-remember" type="checkbox" checked>
+        Remember on this device
+      </label>
+    </div>
+    <div class="dialog-actions">
+      <button type="button" class="btn" data-close>Cancel</button>
+      <button type="submit" class="btn btn-primary">Connect</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="confirm-dialog" aria-labelledby="confirm-title">
+  <form method="dialog" id="confirm-form">
+    <div class="body">
+      <h2 id="confirm-title">Are you sure?</h2>
+      <p id="confirm-text"></p>
+      <div id="confirm-typed" hidden>
+        <label for="confirm-input">Type the branch name to confirm</label>
+        <input id="confirm-input" type="text" autocomplete="off" spellcheck="false">
+      </div>
+    </div>
+    <div class="dialog-actions">
+      <button type="button" class="btn" data-close>Cancel</button>
+      <button type="submit" id="confirm-ok" class="btn btn-primary">Confirm</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="help-dialog" aria-labelledby="help-title">
+  <form method="dialog">
+    <div class="body">
+      <h2 id="help-title">Keyboard shortcuts</h2>
+      <div class="shortcut-list">
+        <div><span>Focus filter</span><kbd>/</kbd></div>
+        <div><span>Refresh now</span><kbd>r</kbd></div>
+        <div><span>Next environment</span><kbd>j</kbd></div>
+        <div><span>Previous environment</span><kbd>k</kbd></div>
+        <div><span>Clear selection or filter</span><kbd>Esc</kbd></div>
+        <div><span>This dialog</span><kbd>?</kbd></div>
+      </div>
+    </div>
+    <div class="dialog-actions">
+      <button type="button" class="btn btn-primary" data-close>Done</button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+"use strict";
+
+/* ==========================================================================
+ * Ramify Control Room
+ *
+ * A single embedded page served by ramifyd at /dashboard/. It has no build
+ * step and no network dependencies: everything it needs is in this file, so
+ * the daemon stays deployable into an air-gapped network.
+ *
+ * Two rules shape the code below.
+ *
+ *   1. Never rebuild what the operator is looking at. Poll responses are
+ *      reconciled into the existing DOM, so a five-second refresh cannot
+ *      steal focus, reset a scroll position, or blank the log pane.
+ *   2. Never interpolate server data into markup. Every value from the API
+ *      reaches the page through textContent, which makes a hostile branch
+ *      name inert rather than merely escaped.
+ * ====================================================================== */
+
+/* ------------------------------------------------------------- constants -- */
+
+var REFRESH_MS      = 5000;   // environment list poll, when healthy
+var LOG_REFRESH_MS  = 4000;   // log tail poll for the selected environment
+var MAX_BACKOFF_MS  = 60000;  // ceiling for the failure backoff
+var TOAST_MS        = 4200;
+var PAGE_SIZE       = 100;
+var MAX_PAGES       = 20;     // bound on pagination, so a huge zone cannot hang the UI
+
+var NEXT_OFFSET_HEADER = "X-Ramify-Next-Offset";
+var TOKEN_KEY          = "ramify.token";
+var THEME_KEY          = "ramify.theme";
+
+/* Status vocabulary, mirroring internal/store: pending, deploying, ready,
+ * failed, sleeping, destroying, destroyed. Anything unrecognised falls back to
+ * the idle tone rather than being dropped, so a future status still renders. */
+var STATUS = {
+  ready:      { label: "Ready",      tone: "ok",   pulse: false },
+  deploying:  { label: "Deploying",  tone: "busy", pulse: true  },
+  pending:    { label: "Pending",    tone: "busy", pulse: true  },
+  destroying: { label: "Destroying", tone: "busy", pulse: true  },
+  failed:     { label: "Failed",     tone: "bad",  pulse: false },
+  sleeping:   { label: "Sleeping",   tone: "rest", pulse: false },
+  destroyed:  { label: "Destroyed",  tone: "idle", pulse: false }
+};
+
+var CHIPS = [
+  { id: "all",       label: "All"         },
+  { id: "ready",     label: "Ready"       },
+  { id: "deploying", label: "In progress" },
+  { id: "sleeping",  label: "Sleeping"    },
+  { id: "failed",    label: "Failed"      }
+];
+
+/* ----------------------------------------------------------------- state -- */
+
+var state = {
+  token:        readStored(TOKEN_KEY) || "",
+  envs:         [],
+  selectedID:   null,
+  baseDomain:   "",
+  query:        "",
+  statusFilter: "all",
+  loaded:       false,
+  failures:     0,
+  lastSync:     null,
+  logText:      "",
+  followLogs:   true,
+  busyAction:   false
+};
+
+var timers = { list: null, logs: null, clock: null };
+var rows   = new Map();   // environment id -> <button> row, for keyed reconciliation
+var detail = { id: null, nodes: null };
+
+/* --------------------------------------------------------------- helpers -- */
+
+function $(id) { return document.getElementById(id); }
+
+/* Storage can throw outright in a private window or with site data blocked, so
+ * every access is guarded and the page works with none of it. */
+function readStored(key) {
+  try { return window.localStorage.getItem(key); } catch (e) { return null; }
+}
+function writeStored(key, value) {
+  try {
+    if (value === null) { window.localStorage.removeItem(key); }
+    else { window.localStorage.setItem(key, value); }
+  } catch (e) { /* non-fatal: the preference simply does not persist */ }
+}
+
+function el(tag, className, text) {
+  var node = document.createElement(tag);
+  if (className) { node.className = className; }
+  if (text !== undefined && text !== null) { node.textContent = text; }
+  return node;
+}
+
+function icon(name, className) {
+  var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("class", className || "icon");
+  svg.setAttribute("aria-hidden", "true");
+  var use = document.createElementNS("http://www.w3.org/2000/svg", "use");
+  use.setAttribute("href", "#" + name);
+  svg.appendChild(use);
+  return svg;
+}
+
+function statusOf(value) {
+  var key = String(value || "").toLowerCase();
+  return STATUS[key] || { label: key || "unknown", tone: "idle", pulse: false };
+}
+
+function hostFor(env) {
+  if (!env || !env.Subdomain) { return ""; }
+  return state.baseDomain ? env.Subdomain + "." + state.baseDomain : env.Subdomain;
+}
+
+/* Relative times are re-derived on a one-second tick rather than baked into the
+ * markup, so "12s ago" keeps counting between polls. */
+function relativeTime(value) {
+  if (!value) { return "never"; }
+  var then = new Date(value).getTime();
+  if (isNaN(then)) { return "unknown"; }
+  var secs = Math.round((Date.now() - then) / 1000);
+  if (secs < 5)     { return "just now"; }
+  if (secs < 60)    { return secs + "s ago"; }
+  var mins = Math.round(secs / 60);
+  if (mins < 60)    { return mins + "m ago"; }
+  var hours = Math.round(mins / 60);
+  if (hours < 48)   { return hours + "h ago"; }
+  return Math.round(hours / 24) + "d ago";
+}
+
+function expiryLabel(value) {
+  if (!value) { return "no expiry"; }
+  var at = new Date(value).getTime();
+  if (isNaN(at)) { return "no expiry"; }
+  var mins = Math.round((at - Date.now()) / 60000);
+  if (mins <= 0)   { return "expired"; }
+  if (mins < 60)   { return mins + "m left"; }
+  if (mins < 1440) { return Math.round(mins / 60) + "h left"; }
+  return Math.round(mins / 1440) + "d left";
+}
+
+function absoluteTime(value) {
+  if (!value) { return "\u2014"; }
+  var at = new Date(value);
+  if (isNaN(at.getTime())) { return String(value); }
+  return at.toLocaleString();
+}
+
+/* -------------------------------------------------------------- API layer -- */
+
+function api(path, options) {
+  options = options || {};
+  var headers = Object.assign({}, options.headers || {});
+  if (state.token) { headers.Authorization = "Bearer " + state.token; }
+  options.headers = headers;
+
+  return fetch(path, options).then(function (response) {
+    if (response.status === 401) {
+      openTokenDialog();
+      var unauthorized = new Error("Unauthorized \u2014 check the API token");
+      unauthorized.unauthorized = true;
+      throw unauthorized;
+    }
+    if (!response.ok) {
+      return response.text().then(function (body) {
+        throw new Error(errorMessage(body, response.status));
+      });
+    }
+    return response;
+  });
+}
+
+/* The daemon reports failures as {"error": "..."}; show the sentence, not the
+ * JSON envelope, and fall back to the raw body for anything else. */
+function errorMessage(body, status) {
+  var text = (body || "").trim();
+  try {
+    var parsed = JSON.parse(text);
+    if (parsed && typeof parsed.error === "string") { return parsed.error; }
+  } catch (e) { /* not JSON: use the body as-is */ }
+  return text || ("Request failed (" + status + ")");
+}
+
+/* fetchEnvironments follows the daemon's X-Ramify-Next-Offset header so an
+ * installation with more environments than one page still shows all of them. */
+function fetchEnvironments() {
+  var collected = [];
+
+  function page(offset, pagesLeft) {
+    var url = "/environments/?limit=" + PAGE_SIZE + "&offset=" + offset;
+    return api(url).then(function (response) {
+      return response.json().then(function (batch) {
+        collected = collected.concat(Array.isArray(batch) ? batch : []);
+        var next = response.headers.get(NEXT_OFFSET_HEADER);
+        if (next && pagesLeft > 1) { return page(parseInt(next, 10), pagesLeft - 1); }
+        return collected;
+      });
+    });
+  }
+
+  return page(0, MAX_PAGES);
+}
+
+/* ------------------------------------------------------------------ toast -- */
+
+function toast(message, tone) {
+  var node = el("div", "toast");
+  node.setAttribute("data-tone", tone || "ok");
+  node.appendChild(icon(tone === "bad" ? "i-alert" : "i-check"));
+  node.appendChild(el("span", null, message));
+  $("toasts").appendChild(node);
+  window.setTimeout(function () { node.remove(); }, TOAST_MS);
+}
+
+/* ------------------------------------------------------------ connection -- */
+
+function setConnection(stateName, label) {
+  var pill = $("connection");
+  pill.setAttribute("data-state", stateName);
+  pill.querySelector(".label").textContent = label;
+}
+
+function refreshConnectionLabel() {
+  var pill = $("connection");
+  if (pill.getAttribute("data-state") !== "live") { return; }
+  pill.querySelector(".label").textContent = "Synced " + relativeTime(state.lastSync);
+}
+
+/* --------------------------------------------------------------- loading -- */
+
+function load() {
+  return fetchEnvironments().then(function (envs) {
+    state.envs      = envs;
+    state.loaded    = true;
+    state.failures  = 0;
+    state.lastSync  = new Date().toISOString();
+
+    setConnection("live", "Synced just now");
+    render();
+    scheduleList(REFRESH_MS);
+  }).catch(function (err) {
+    state.failures += 1;
+    state.loaded = true;
+    setConnection("error", err.unauthorized ? "Unauthorized" : "Disconnected");
+    if (!err.unauthorized) { toast(err.message, "bad"); }
+    render();
+
+    // Back off geometrically rather than hammering a daemon that is down.
+    var delay = Math.min(REFRESH_MS * Math.pow(2, state.failures - 1), MAX_BACKOFF_MS);
+    scheduleList(delay);
+  });
+}
+
+function scheduleList(delay) {
+  window.clearTimeout(timers.list);
+  if (document.hidden) { return; }   // resumed by the visibilitychange handler
+  timers.list = window.setTimeout(load, delay);
+}
+
+/* ------------------------------------------------------------- filtering -- */
+
+function matchesFilters(env) {
+  var status = String(env.Status || "").toLowerCase();
+
+  if (state.statusFilter === "deploying") {
+    if (status !== "deploying" && status !== "pending" && status !== "destroying") { return false; }
+  } else if (state.statusFilter !== "all" && status !== state.statusFilter) {
+    return false;
+  }
+
+  if (!state.query) { return true; }
+  var haystack = [env.Project, env.Branch, env.Subdomain, env.Status].join(" ").toLowerCase();
+  return haystack.indexOf(state.query) !== -1;
+}
+
+function visibleEnvs() {
+  return state.envs.filter(matchesFilters);
+}
+
+/* ----------------------------------------------------------------- render -- */
+
+function render() {
+  renderStats();
+  renderList();
+  renderDetail();
+}
+
+function renderStats() {
+  var total = state.envs.length;
+  var ready = 0, busy = 0, failed = 0;
+
+  state.envs.forEach(function (env) {
+    var status = String(env.Status || "").toLowerCase();
+    if (status === "ready") { ready += 1; }
+    else if (status === "deploying" || status === "pending" || status === "destroying") { busy += 1; }
+    else if (status === "failed") { failed += 1; }
+  });
+
+  $("stat-total").textContent  = total;
+  $("stat-ready").textContent  = ready;
+  $("stat-busy").textContent   = busy;
+  $("stat-failed").textContent = failed;
+}
+
+function renderChips() {
+  var container = $("chips");
+  container.textContent = "";
+  CHIPS.forEach(function (chip) {
+    var button = el("button", "chip", chip.label);
+    button.type = "button";
+    button.setAttribute("aria-pressed", String(state.statusFilter === chip.id));
+    button.addEventListener("click", function () {
+      state.statusFilter = chip.id;
+      renderChips();
+      renderList();
+    });
+    container.appendChild(button);
+  });
+}
+
+/* buildRow creates the row for one environment. updateRow refreshes an existing
+ * one in place; together they let renderList reuse DOM across polls. */
+function buildRow(env) {
+  var row = el("button", "env-row");
+  row.type = "button";
+  row.setAttribute("role", "option");
+  row.dataset.id = env.ID;
+
+  var top = el("div", "env-top");
+  top.appendChild(el("span", "env-project"));
+  top.appendChild(buildBadge());
+  row.appendChild(top);
+
+  var branch = el("div", "env-branch");
+  branch.appendChild(icon("i-branch"));
+  branch.appendChild(el("span"));
+  row.appendChild(branch);
+
+  var meta = el("div", "env-meta");
+  ["host", "expiry", "updated"].forEach(function (name) {
+    var span = el("span");
+    span.dataset.field = name;
+    span.appendChild(el("span"));
+    meta.appendChild(span);
+  });
+  row.appendChild(meta);
+
+  row.addEventListener("click", function () { select(env.ID); });
+  return row;
+}
+
+function buildBadge() {
+  var badge = el("span", "badge");
+  badge.appendChild(el("span", "dot"));
+  badge.appendChild(el("span", "badge-label"));
+  return badge;
+}
+
+function updateBadge(badge, status) {
+  var meta = statusOf(status);
+  badge.setAttribute("data-tone", meta.tone);
+  badge.setAttribute("data-pulse", String(meta.pulse));
+  badge.querySelector(".badge-label").textContent = meta.label;
+}
+
+function updateRow(row, env) {
+  row.querySelector(".env-project").textContent = env.Project || "(unnamed project)";
+  row.querySelector(".env-branch span").textContent = env.Branch || "(no branch)";
+  updateBadge(row.querySelector(".badge"), env.Status);
+
+  var fields = {
+    host:    hostFor(env) || "no host",
+    expiry:  expiryLabel(env.TTLExpiresAt),
+    updated: relativeTime(env.UpdatedAt)
+  };
+  Object.keys(fields).forEach(function (name) {
+    row.querySelector('[data-field="' + name + '"] span').textContent = fields[name];
+  });
+
+  row.setAttribute("aria-selected", String(state.selectedID === env.ID));
+}
+
+function renderList() {
+  var container = $("env-list");
+  var list = visibleEnvs();
+
+  $("list-count").textContent = list.length;
+
+  if (!state.loaded) { return renderSkeleton(container); }
+
+  if (list.length === 0) {
+    rows.clear();
+    container.textContent = "";
+    var empty = emptyState(
+      "i-inbox",
+      state.envs.length === 0 ? "No environments yet" : "Nothing matches",
+      state.envs.length === 0
+        ? "Preview environments appear here as soon as a webhook creates one."
+        : "No environment matches the current filter."
+    );
+    container.appendChild(empty);
+    return;
+  }
+
+  // Reconcile against the previous render: reuse rows by id, drop the rest, and
+  // reorder only where the list order actually changed.
+  var seen = new Set();
+  list.forEach(function (env, index) {
+    var row = rows.get(env.ID);
+    if (!row) {
+      row = buildRow(env);
+      rows.set(env.ID, row);
+    }
+    updateRow(row, env);
+    seen.add(env.ID);
+
+    var existing = container.children[index];
+    if (existing !== row) { container.insertBefore(row, existing || null); }
+  });
+
+  rows.forEach(function (row, id) {
+    if (!seen.has(id)) { row.remove(); rows.delete(id); }
+  });
+  while (container.children.length > list.length) {
+    container.removeChild(container.lastChild);
+  }
+}
+
+function renderSkeleton(container) {
+  if (container.dataset.skeleton === "true") { return; }
+  container.dataset.skeleton = "true";
+  container.textContent = "";
+  for (var i = 0; i < 4; i += 1) {
+    var block = el("div", "skeleton");
+    var wide = el("div", "skeleton-line");
+    wide.style.width = "62%";
+    var narrow = el("div", "skeleton-line");
+    narrow.style.width = "38%";
+    block.appendChild(wide);
+    block.appendChild(narrow);
+    container.appendChild(block);
+  }
+}
+
+function emptyState(iconName, title, body) {
+  var wrap = el("div", "state");
+  wrap.appendChild(icon(iconName));
+  wrap.appendChild(el("h3", null, title));
+  wrap.appendChild(el("p", null, body));
+  return wrap;
+}
+
+/* ----------------------------------------------------------------- detail -- */
+
+function selectedEnv() {
+  if (!state.selectedID) { return null; }
+  for (var i = 0; i < state.envs.length; i += 1) {
+    if (state.envs[i].ID === state.selectedID) { return state.envs[i]; }
+  }
+  return null;
+}
+
+function select(id) {
+  if (state.selectedID === id) { return; }
+  state.selectedID = id;
+  state.logText = "";
+  state.followLogs = true;
+  renderList();
+  renderDetail();
+  loadLogs();
+}
+
+function renderDetail() {
+  var container = $("detail");
+  var env = selectedEnv();
+
+  if (!env) {
+    if (detail.id !== null) { container.textContent = ""; detail = { id: null, nodes: null }; }
+    if (!container.firstChild) {
+      container.appendChild(emptyState(
+        "i-pointer",
+        "Select an environment",
+        "Pick an environment on the left to see its deployment details and live logs."
+      ));
+    }
+    return;
+  }
+
+  // Rebuild only when the selection changes; otherwise patch text in place so a
+  // poll never disturbs log scroll position or a mid-click button.
+  if (detail.id !== env.ID) {
+    container.textContent = "";
+    detail = { id: env.ID, nodes: buildDetail(container) };
+    renderLogs(state.logText);
+  }
+  updateDetail(detail.nodes, env);
+}
+
+function buildDetail(container) {
+  var nodes = {};
+
+  var head = el("div", "detail-head");
+  var title = el("div", "detail-title");
+  var titleText = el("div");
+  nodes.project = el("h2");
+  titleText.appendChild(nodes.project);
+  var sub = el("div", "detail-sub");
+  sub.appendChild(icon("i-branch"));
+  nodes.branch = el("span");
+  sub.appendChild(nodes.branch);
+  titleText.appendChild(sub);
+  title.appendChild(titleText);
+  nodes.badge = buildBadge();
+  title.appendChild(nodes.badge);
+  head.appendChild(title);
+
+  nodes.actions = el("div", "actions");
+  head.appendChild(nodes.actions);
+  container.appendChild(head);
+
+  nodes.facts = el("dl", "facts");
+  container.appendChild(nodes.facts);
+
+  var section = el("div", "logs-section");
+  var logsHead = el("div", "logs-head");
+  logsHead.appendChild(el("h3", null, "Deployment logs"));
+  logsHead.appendChild(el("div", "topbar-spacer"));
+
+  var followLabel = el("label", null);
+  nodes.follow = document.createElement("input");
+  nodes.follow.type = "checkbox";
+  nodes.follow.checked = state.followLogs;
+  nodes.follow.addEventListener("change", function () {
+    state.followLogs = nodes.follow.checked;
+    if (state.followLogs) { nodes.logs.scrollTop = nodes.logs.scrollHeight; }
+  });
+  followLabel.appendChild(nodes.follow);
+  followLabel.appendChild(document.createTextNode("Follow tail"));
+  logsHead.appendChild(followLabel);
+
+  var reload = el("button", "btn btn-sm", "Reload");
+  reload.type = "button";
+  reload.addEventListener("click", function () { loadLogs(); });
+  logsHead.appendChild(reload);
+
+  section.appendChild(logsHead);
+  nodes.logs = el("pre", "logs");
+  nodes.logs.setAttribute("tabindex", "0");
+  nodes.logs.setAttribute("aria-label", "Deployment logs");
+  // A manual scroll away from the bottom turns following off, so reading back
+  // through history is not yanked forward by the next poll.
+  nodes.logs.addEventListener("scroll", function () {
+    var atBottom = nodes.logs.scrollHeight - nodes.logs.scrollTop - nodes.logs.clientHeight < 24;
+    if (state.followLogs !== atBottom) {
+      state.followLogs = atBottom;
+      nodes.follow.checked = atBottom;
+    }
+  });
+  section.appendChild(nodes.logs);
+  container.appendChild(section);
+
+  return nodes;
+}
+
+function updateDetail(nodes, env) {
+  nodes.project.textContent = env.Project || "(unnamed project)";
+  nodes.branch.textContent  = env.Branch || "(no branch)";
+  updateBadge(nodes.badge, env.Status);
+
+  renderActions(nodes.actions, env);
+  renderFacts(nodes.facts, env);
+}
+
+function renderActions(container, env) {
+  container.textContent = "";
+  var status = String(env.Status || "").toLowerCase();
+  var host = hostFor(env);
+
+  if (host && status !== "destroyed") {
+    var open = el("a", "btn btn-primary", "Open preview");
+    open.href = "https://" + host;
+    open.target = "_blank";
+    open.rel = "noopener noreferrer";
+    open.appendChild(icon("i-external"));
+    container.appendChild(open);
+  }
+
+  if (status === "ready") {
+    container.appendChild(actionButton("Sleep", "i-moon-z", "btn", function () { runAction(env, "sleep"); }));
+  }
+  if (status === "sleeping") {
+    container.appendChild(actionButton("Wake", "i-power", "btn", function () { runAction(env, "wake"); }));
+  }
+  if (status !== "destroyed" && status !== "destroying") {
+    container.appendChild(actionButton("Destroy", "i-trash", "btn btn-danger", function () { runAction(env, "destroy"); }));
+  }
+}
+
+function actionButton(label, iconName, className, onClick) {
+  var button = el("button", className);
+  button.type = "button";
+  button.appendChild(icon(iconName));
+  button.appendChild(el("span", null, label));
+  button.disabled = state.busyAction;
+  button.addEventListener("click", onClick);
+  return button;
+}
+
+function renderFacts(container, env) {
+  container.textContent = "";
+  var host = hostFor(env);
+
+  var facts = [
+    { label: "Environment ID", value: env.ID, copy: true },
+    { label: "Preview host",   value: host || "\u2014", copy: Boolean(host) },
+    { label: "Artifact",       value: env.ArtifactRef || "\u2014", copy: Boolean(env.ArtifactRef) },
+    { label: "Deploy ref",     value: env.DeployRef || "\u2014", copy: Boolean(env.DeployRef) },
+    { label: "Pull request",   value: env.PRNumber ? "#" + env.PRNumber : "\u2014" },
+    { label: "Expires",        value: env.TTLExpiresAt ? absoluteTime(env.TTLExpiresAt) + " (" + expiryLabel(env.TTLExpiresAt) + ")" : "No expiry" },
+    { label: "Created",        value: absoluteTime(env.CreatedAt) },
+    { label: "Updated",        value: absoluteTime(env.UpdatedAt) + " (" + relativeTime(env.UpdatedAt) + ")" }
+  ];
+
+  facts.forEach(function (fact) {
+    var wrap = el("div", "fact");
+    wrap.appendChild(el("dt", null, fact.label));
+    var dd = el("dd");
+    dd.appendChild(el("span", null, fact.value));
+    if (fact.copy) { dd.appendChild(copyButton(fact.value, fact.label)); }
+    wrap.appendChild(dd);
+    container.appendChild(wrap);
+  });
+}
+
+function copyButton(value, label) {
+  var button = el("button", "copy");
+  button.type = "button";
+  button.title = "Copy " + label.toLowerCase();
+  button.setAttribute("aria-label", "Copy " + label.toLowerCase());
+  button.appendChild(icon("i-copy"));
+  button.addEventListener("click", function (event) {
+    event.stopPropagation();
+    copyText(value).then(function () {
+      toast(label + " copied", "ok");
+    }).catch(function () {
+      toast("Could not copy to the clipboard", "bad");
+    });
+  });
+  return button;
+}
+
+/* The clipboard API is unavailable over plain HTTP, which is exactly how a
+ * daemon on a private network is usually reached, so fall back to a selection. */
+function copyText(value) {
+  if (navigator.clipboard && window.isSecureContext) {
+    return navigator.clipboard.writeText(value);
+  }
+  return new Promise(function (resolve, reject) {
+    var area = document.createElement("textarea");
+    area.value = value;
+    area.setAttribute("readonly", "");
+    area.style.position = "fixed";
+    area.style.opacity = "0";
+    document.body.appendChild(area);
+    area.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    area.remove();
+    return ok ? resolve() : reject(new Error("copy unavailable"));
+  });
+}
+
+/* ------------------------------------------------------------------ logs -- */
+
+function loadLogs() {
+  var env = selectedEnv();
+  if (!env) { return Promise.resolve(); }
+  var id = env.ID;
+
+  return api("/environments/" + encodeURIComponent(id) + "/logs").then(function (response) {
+    return response.text();
+  }).then(function (text) {
+    if (state.selectedID !== id) { return; }   // selection moved while in flight
+    state.logText = text;
+    renderLogs(text);
+  }).catch(function (err) {
+    if (state.selectedID !== id || err.unauthorized) { return; }
+    renderLogs("Logs are unavailable: " + err.message);
+  });
+}
+
+function renderLogs(text) {
+  if (!detail.nodes) { return; }
+  var pane = detail.nodes.logs;
+  var body = text && text.length ? text : "No logs reported for this environment yet.";
+  if (pane.textContent === body) { return; }   // nothing changed: leave scroll alone
+
+  var atBottom = state.followLogs;
+  pane.textContent = body;
+  if (atBottom) { pane.scrollTop = pane.scrollHeight; }
+}
+
+function scheduleLogs() {
+  window.clearInterval(timers.logs);
+  timers.logs = window.setInterval(function () {
+    if (document.hidden || !state.selectedID) { return; }
+    loadLogs();
+  }, LOG_REFRESH_MS);
+}
+
+/* --------------------------------------------------------------- actions -- */
+
+var ACTIONS = {
+  sleep:   { verb: "Sleep",   past: "Sleep requested",   method: "POST",   path: "/sleep", destructive: false },
+  wake:    { verb: "Wake",    past: "Wake requested",    method: "POST",   path: "/wake",  destructive: false },
+  // Destroy is DELETE on the environment itself; there is no /destroy route.
+  destroy: { verb: "Destroy", past: "Destroy requested", method: "DELETE", path: "",       destructive: true  }
+};
+
+function runAction(env, kind) {
+  var action = ACTIONS[kind];
+  if (!action || state.busyAction) { return; }
+
+  var prompt = action.destructive
+    ? "This tears down the preview environment for " + (env.Branch || env.Project) + ". It cannot be undone."
+    : "This will " + action.verb.toLowerCase() + " the preview environment for " + (env.Branch || env.Project) + ".";
+
+  confirmAction(action.verb, prompt, action.destructive ? env.Branch : null).then(function (confirmed) {
+    if (!confirmed) { return; }
+
+    state.busyAction = true;
+    renderDetail();
+
+    var url = "/environments/" + encodeURIComponent(env.ID) + action.path;
+    api(url, { method: action.method }).then(function () {
+      toast(action.past, "ok");
+      if (action.destructive) { state.selectedID = null; }
+      return load();
+    }).catch(function (err) {
+      if (!err.unauthorized) { toast(err.message, "bad"); }
+    }).then(function () {
+      state.busyAction = false;
+      render();
+    });
+  });
+}
+
+/* confirmAction resolves true only if the operator confirms. A destructive
+ * action additionally requires the branch name typed back, which is what stops
+ * a stray click from destroying the wrong environment. */
+function confirmAction(verb, message, typedValue) {
+  return new Promise(function (resolve) {
+    var dialog  = $("confirm-dialog");
+    var form    = $("confirm-form");
+    var input   = $("confirm-input");
+    var wrapper = $("confirm-typed");
+    var okay    = $("confirm-ok");
+
+    $("confirm-title").textContent = verb + " environment?";
+    $("confirm-text").textContent  = message;
+
+    var needsTyping = Boolean(typedValue);
+    wrapper.hidden = !needsTyping;
+    input.value = "";
+    okay.textContent = verb;
+    okay.className = needsTyping ? "btn btn-danger" : "btn btn-primary";
+    okay.disabled = needsTyping;
+
+    function onInput() { okay.disabled = input.value.trim() !== typedValue; }
+    if (needsTyping) { input.addEventListener("input", onInput); }
+
+    var settled = false;
+    function finish(result) {
+      if (settled) { return; }
+      settled = true;
+      input.removeEventListener("input", onInput);
+      form.removeEventListener("submit", onSubmit);
+      dialog.removeEventListener("close", onClose);
+      resolve(result);
+    }
+    function onSubmit() { finish(true); }
+    function onClose()  { finish(false); }
+
+    form.addEventListener("submit", onSubmit);
+    dialog.addEventListener("close", onClose);
+    dialog.showModal();
+    if (needsTyping) { input.focus(); }
+  });
+}
+
+/* ----------------------------------------------------------------- token -- */
+
+function openTokenDialog() {
+  var dialog = $("token-dialog");
+  if (dialog.open) { return; }
+  $("token-input").value = state.token;
+  dialog.showModal();
+  $("token-input").focus();
+}
+
+/* ----------------------------------------------------------------- theme -- */
+
+function applyTheme(theme) {
+  var root = document.documentElement;
+  if (theme === "light" || theme === "dark") {
+    root.setAttribute("data-theme", theme);
+  } else {
+    root.removeAttribute("data-theme");
+  }
+  var dark = theme === "dark" ||
+    (theme !== "light" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+  $("theme-toggle").querySelector("use").setAttribute("href", dark ? "#i-sun" : "#i-moon");
+}
+
+function toggleTheme() {
+  var current = readStored(THEME_KEY);
+  var dark = current === "dark" ||
+    (!current && window.matchMedia("(prefers-color-scheme: dark)").matches);
+  var next = dark ? "light" : "dark";
+  writeStored(THEME_KEY, next);
+  applyTheme(next);
+}
+
+/* ------------------------------------------------------------- shortcuts -- */
+
+function isTypingTarget(node) {
+  if (!node) { return false; }
+  var tag = node.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || node.isContentEditable;
+}
+
+function moveSelection(delta) {
+  var list = visibleEnvs();
+  if (list.length === 0) { return; }
+
+  var index = -1;
+  for (var i = 0; i < list.length; i += 1) {
+    if (list[i].ID === state.selectedID) { index = i; break; }
+  }
+  var next = index === -1 ? 0 : Math.min(Math.max(index + delta, 0), list.length - 1);
+
+  select(list[next].ID);
+  var row = rows.get(list[next].ID);
+  if (row) { row.scrollIntoView({ block: "nearest" }); }
+}
+
+function onKeydown(event) {
+  if (event.metaKey || event.ctrlKey || event.altKey) { return; }
+
+  if (event.key === "Escape" && !document.querySelector("dialog[open]")) {
+    if (state.query) {
+      state.query = "";
+      $("filter").value = "";
+      renderList();
+    } else if (state.selectedID) {
+      state.selectedID = null;
+      renderList();
+      renderDetail();
+    }
+    return;
+  }
+
+  if (isTypingTarget(event.target) || document.querySelector("dialog[open]")) { return; }
+
+  switch (event.key) {
+    case "/":
+      event.preventDefault();
+      $("filter").focus();
+      $("filter").select();
+      break;
+    case "r":
+      event.preventDefault();
+      setConnection("idle", "Refreshing");
+      load();
+      break;
+    case "j": moveSelection(1);  break;
+    case "k": moveSelection(-1); break;
+    case "?": $("help-dialog").showModal(); break;
+    default: break;
+  }
+}
+
+/* ------------------------------------------------------------------ init -- */
+
+function wireDialogs() {
+  document.querySelectorAll("dialog [data-close]").forEach(function (button) {
+    button.addEventListener("click", function () {
+      button.closest("dialog").close();
+    });
+  });
+
+  $("token-form").addEventListener("submit", function (event) {
+    // method="dialog" would close the dialog for us, but the value has to be
+    // captured first, so submission is handled explicitly.
+    event.preventDefault();
+    var value = $("token-input").value.trim();
+    if (!value) { return; }
+
+    state.token = value;
+    writeStored(TOKEN_KEY, $("token-remember").checked ? value : null);
+    $("token-dialog").close();
+    setConnection("idle", "Connecting");
+    load();
+  });
+}
+
+function wireControls() {
+  $("refresh").addEventListener("click", function () {
+    setConnection("idle", "Refreshing");
+    load();
+  });
+  $("open-token").addEventListener("click", openTokenDialog);
+  $("open-help").addEventListener("click", function () { $("help-dialog").showModal(); });
+  $("theme-toggle").addEventListener("click", toggleTheme);
+
+  $("filter").addEventListener("input", function (event) {
+    state.query = event.target.value.trim().toLowerCase();
+    renderList();
+  });
+
+  document.addEventListener("keydown", onKeydown);
+
+  // Polling stops entirely while the tab is hidden and resumes on return, so a
+  // dashboard left open overnight does not keep the daemon busy.
+  document.addEventListener("visibilitychange", function () {
+    if (document.hidden) {
+      window.clearTimeout(timers.list);
+      setConnection("paused", "Paused");
+    } else {
+      load();
+    }
+  });
+}
+
+function start() {
+  applyTheme(readStored(THEME_KEY));
+  renderChips();
+  renderList();
+  renderDetail();
+  wireDialogs();
+  wireControls();
+  scheduleLogs();
+
+  timers.clock = window.setInterval(function () {
+    refreshConnectionLabel();
+    if (state.loaded && state.envs.length) { renderList(); }
+  }, 1000);
+
+  // The base domain is public and unauthenticated; a failure here must not stop
+  // the environment list from loading.
+  fetch("/dashboard/config")
+    .then(function (response) { return response.ok ? response.json() : {}; })
+    .catch(function () { return {}; })
+    .then(function (config) {
+      state.baseDomain = (config && config.base_domain) || "";
+      if (!state.token) { openTokenDialog(); }
+      return load();
+    });
+}
+
+start();
+</script>
+</body>
+</html>

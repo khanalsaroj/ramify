@@ -11,8 +11,12 @@ base_domain: preview.example.com
 server:
   # Unix socket the control API listens on by default.
   socket_path: /var/run/ramify/ramify.sock
-  # Optional token-protected TCP listener, for remote CLI access. Leave both empty
-  # to disable and use the unix socket only.
+  # Optional token-protected TCP listener, for remote CLI access, and the address
+  # the built-in dashboard is served on at /dashboard/. Leave both empty to
+  # disable and use the unix socket only. Note the dashboard page itself is served
+  # unauthenticated (a browser cannot send a bearer token on a navigation), so put
+  # this listener on a trusted network; every environment route still requires the
+  # token below.
   tcp_addr: ""
   tcp_token: ""
 
@@ -26,14 +30,20 @@ reaper:
   default_ttl: 72h
   event_retention: 720h
 
-github:
-  # A GitHub personal access token or installation token with repo + pull_request
-  # scope, used to post status comments.
+git:
+  # Supported values: github, gitlab, bitbucket.
+  provider: github
+  # Token used to post status comments.
   token: $RAMIFY_GITHUB_TOKEN
-  # The webhook secret configured on the GitHub repository/organization webhook.
+  # The webhook secret configured on the repository webhook.
   webhook_secret: $RAMIFY_GITHUB_WEBHOOK_SECRET
+  # Set this for self-hosted GitLab (for example https://gitlab.example.com).
+  # GitHub and Bitbucket Cloud use their public defaults when omitted.
+  base_url: ""
 
 deploy:
+  # Supported values: compose or kubernetes.
+  provider: compose
   # The host Ramify SSHes to in order to run `docker compose`.
   ssh_addr: deploy-host.example.com:22
   ssh_user: ramify
@@ -47,10 +57,24 @@ deploy:
   dns_target: 203.0.113.10
   # Optional remote directory mounted/read by the reverse proxy for TLS files.
   certificate_dir: /srv/ramify/certificates
+  # Kubernetes options (used when provider is kubernetes).
+  kubernetes_namespace: ramify
+  kubernetes_context: ""
+  kubernetes_kubeconfig: ""
+  kubernetes_ingress_class: nginx
+  kubernetes_container_port: 8080
+  kubernetes_service_port: 8080
 
 dns:
+  # Supported values: cloudflare, route53, googlecloud, digitalocean.
+  provider: cloudflare
   zone: preview.example.com
   cloudflare_api_token: $RAMIFY_CLOUDFLARE_API_TOKEN
+  # For DigitalOcean use api_token. For Google Cloud use project + zone_id
+  # and Application Default Credentials. Route 53 uses the AWS credential chain.
+  api_token: ""
+  project: ""
+  zone_id: ""
 
 acme:
   email: ops@example.com

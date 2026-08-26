@@ -21,6 +21,7 @@ type Config struct {
 	Store      StoreConfig  `yaml:"store"`
 	Reaper     ReaperConfig `yaml:"reaper"`
 	GitHub     GitHubConfig `yaml:"github"`
+	Git        GitConfig    `yaml:"git"`
 	Deploy     DeployConfig `yaml:"deploy"`
 	DNS        DNSConfig    `yaml:"dns"`
 	ACME       ACMEConfig   `yaml:"acme"`
@@ -53,8 +54,18 @@ type GitHubConfig struct {
 	WebhookSecret string `yaml:"webhook_secret"`
 }
 
+// GitConfig selects the Git hosting provider. The legacy github block remains
+// supported so existing installations do not need to change immediately.
+type GitConfig struct {
+	Provider      string `yaml:"provider"`
+	Token         string `yaml:"token"`
+	WebhookSecret string `yaml:"webhook_secret"`
+	BaseURL       string `yaml:"base_url,omitempty"`
+}
+
 // DeployConfig configures providers/deploy/compose.
 type DeployConfig struct {
+	Provider          string `yaml:"provider"`
 	SSHAddr           string `yaml:"ssh_addr"`
 	SSHUser           string `yaml:"ssh_user"`
 	SSHPrivateKeyPath string `yaml:"ssh_private_key_path"`
@@ -62,16 +73,26 @@ type DeployConfig struct {
 	// OpenSSH-format known_hosts file. Left empty, the host key is not verified —
 	// acceptable only for a first connection to a host you've provisioned
 	// yourself; ramify doctor warns if this is unset.
-	SSHKnownHostsPath string `yaml:"ssh_known_hosts_path,omitempty"`
-	ComposeFile       string `yaml:"compose_file"`
-	DNSTarget         string `yaml:"dns_target"`
-	CertificateDir    string `yaml:"certificate_dir,omitempty"`
+	SSHKnownHostsPath       string `yaml:"ssh_known_hosts_path,omitempty"`
+	ComposeFile             string `yaml:"compose_file"`
+	DNSTarget               string `yaml:"dns_target"`
+	CertificateDir          string `yaml:"certificate_dir,omitempty"`
+	KubernetesNamespace     string `yaml:"kubernetes_namespace,omitempty"`
+	KubernetesContext       string `yaml:"kubernetes_context,omitempty"`
+	KubernetesKubeconfig    string `yaml:"kubernetes_kubeconfig,omitempty"`
+	KubernetesIngressClass  string `yaml:"kubernetes_ingress_class,omitempty"`
+	KubernetesContainerPort int    `yaml:"kubernetes_container_port,omitempty"`
+	KubernetesServicePort   int    `yaml:"kubernetes_service_port,omitempty"`
 }
 
 // DNSConfig configures providers/dns/cloudflare.
 type DNSConfig struct {
+	Provider           string `yaml:"provider"`
 	Zone               string `yaml:"zone"`
 	CloudflareAPIToken string `yaml:"cloudflare_api_token"`
+	APIToken           string `yaml:"api_token,omitempty"`
+	Project            string `yaml:"project,omitempty"`
+	ZoneID             string `yaml:"zone_id,omitempty"`
 }
 
 // ACMEConfig configures providers/cert/acme.
@@ -98,7 +119,7 @@ type LogConfig struct {
 
 // secretFields lists the config field names (not values) that hold secrets, purely
 // for logging: §6 requires that Ramify log secret *names*, never values.
-var secretFields = []string{"github.token", "github.webhook_secret", "dns.cloudflare_api_token"}
+var secretFields = []string{"git.token", "git.webhook_secret", "github.token", "github.webhook_secret", "dns.api_token", "dns.cloudflare_api_token"}
 
 // LogValue implements slog.LogValuer, redacting every field in secretFields so
 // logging a Config never leaks a secret value, only which fields were configured.
@@ -127,22 +148,40 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("config: parsing %s: %w", path, err)
 	}
 
-	resolved, err := resolveEnv(cfg.GitHub.Token)
-	if err != nil {
-		return nil, fmt.Errorf("config: github.token: %w", err)
+	if cfg.Git.Provider == "" {
+		cfg.Git.Provider = "github"
 	}
-	cfg.GitHub.Token = resolved
+	if cfg.Git.Token == "" {
+		cfg.Git.Token = cfg.GitHub.Token
+	}
+	if cfg.Git.WebhookSecret == "" {
+		cfg.Git.WebhookSecret = cfg.GitHub.WebhookSecret
+	}
+	resolved, err := resolveEnv(cfg.Git.Token)
+	if err != nil {
+		return nil, fmt.Errorf("config: git.token: %w", err)
+	}
+	cfg.Git.Token = resolved
 
-	resolved, err = resolveEnv(cfg.GitHub.WebhookSecret)
+	resolved, err = resolveEnv(cfg.Git.WebhookSecret)
 	if err != nil {
-		return nil, fmt.Errorf("config: github.webhook_secret: %w", err)
+		return nil, fmt.Errorf("config: git.webhook_secret: %w", err)
 	}
-	cfg.GitHub.WebhookSecret = resolved
+	cfg.Git.WebhookSecret = resolved
+	cfg.GitHub.Token = cfg.Git.Token
+	cfg.GitHub.WebhookSecret = cfg.Git.WebhookSecret
 
-	resolved, err = resolveEnv(cfg.DNS.CloudflareAPIToken)
-	if err != nil {
-		return nil, fmt.Errorf("config: dns.cloudflare_api_token: %w", err)
+	if cfg.DNS.Provider == "" {
+		cfg.DNS.Provider = "cloudflare"
 	}
+	if cfg.DNS.APIToken == "" {
+		cfg.DNS.APIToken = cfg.DNS.CloudflareAPIToken
+	}
+	resolved, err = resolveEnv(cfg.DNS.APIToken)
+	if err != nil {
+		return nil, fmt.Errorf("config: dns.api_token: %w", err)
+	}
+	cfg.DNS.APIToken = resolved
 	cfg.DNS.CloudflareAPIToken = resolved
 
 	resolved, err = resolveEnv(cfg.Server.TCPToken)
@@ -160,6 +199,22 @@ func Load(path string) (*Config, error) {
 // Validate reports whether every field Ramify requires at startup is present.
 func (c Config) Validate() error {
 	var missing []string
+	deployProvider := c.Deploy.Provider
+	if deployProvider == "" {
+		deployProvider = "compose"
+	}
+	gitProvider := c.Git.Provider
+	gitToken := c.Git.Token
+	gitSecret := c.Git.WebhookSecret
+	if gitProvider == "" {
+		gitProvider = "github"
+	}
+	if gitToken == "" {
+		gitToken = c.GitHub.Token
+	}
+	if gitSecret == "" {
+		gitSecret = c.GitHub.WebhookSecret
+	}
 	if c.BaseDomain == "" {
 		missing = append(missing, "base_domain")
 	}
@@ -172,29 +227,53 @@ func (c Config) Validate() error {
 	if c.Server.TCPAddr != "" && c.Server.TCPToken == "" {
 		missing = append(missing, "server.tcp_token (required when server.tcp_addr is set)")
 	}
-	if c.GitHub.Token == "" {
-		missing = append(missing, "github.token")
+	if gitToken == "" {
+		missing = append(missing, "git.token")
 	}
-	if c.GitHub.WebhookSecret == "" {
-		missing = append(missing, "github.webhook_secret")
+	if gitSecret == "" {
+		missing = append(missing, "git.webhook_secret")
 	}
-	if c.Deploy.SSHAddr == "" {
-		missing = append(missing, "deploy.ssh_addr")
+	if gitProvider != "github" && gitProvider != "gitlab" && gitProvider != "bitbucket" {
+		missing = append(missing, "git.provider (github, gitlab, or bitbucket)")
 	}
-	if c.Deploy.ComposeFile == "" {
-		missing = append(missing, "deploy.compose_file")
+	if deployProvider == "compose" {
+		if c.Deploy.SSHAddr == "" {
+			missing = append(missing, "deploy.ssh_addr")
+		}
+		if c.Deploy.ComposeFile == "" {
+			missing = append(missing, "deploy.compose_file")
+		}
+		if c.Deploy.SSHPrivateKeyPath == "" {
+			missing = append(missing, "deploy.ssh_private_key_path")
+		}
 	}
-	if c.Deploy.SSHPrivateKeyPath == "" {
-		missing = append(missing, "deploy.ssh_private_key_path")
+	if deployProvider != "compose" && deployProvider != "kubernetes" {
+		missing = append(missing, "deploy.provider (compose or kubernetes)")
 	}
 	if c.Deploy.DNSTarget == "" {
 		missing = append(missing, "deploy.dns_target")
 	}
+	if deployProvider == "kubernetes" && c.Deploy.KubernetesNamespace == "" {
+		missing = append(missing, "deploy.kubernetes_namespace")
+	}
 	if c.DNS.Zone == "" {
 		missing = append(missing, "dns.zone")
 	}
-	if c.DNS.CloudflareAPIToken == "" {
-		missing = append(missing, "dns.cloudflare_api_token")
+	dnsProvider := c.DNS.Provider
+	if dnsProvider == "" {
+		dnsProvider = "cloudflare"
+	}
+	if dnsProvider != "googlecloud" && dnsProvider != "route53" && c.DNS.APIToken == "" && c.DNS.CloudflareAPIToken == "" {
+		missing = append(missing, "dns.api_token")
+	}
+	if dnsProvider != "cloudflare" && dnsProvider != "route53" && dnsProvider != "googlecloud" && dnsProvider != "digitalocean" {
+		missing = append(missing, "dns.provider (cloudflare, route53, googlecloud, or digitalocean)")
+	}
+	if dnsProvider == "googlecloud" && c.DNS.Project == "" {
+		missing = append(missing, "dns.project")
+	}
+	if dnsProvider == "googlecloud" && c.DNS.ZoneID == "" {
+		missing = append(missing, "dns.zone_id")
 	}
 	if c.ACME.Email == "" {
 		missing = append(missing, "acme.email")

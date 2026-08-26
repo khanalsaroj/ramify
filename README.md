@@ -32,7 +32,8 @@ together, automatically.
   provider, real certificates via ACME DNS-01 — not a proxy tunnel into an
   environment someone else routes.
 - **Deploys to infrastructure you already run.** SSH + `docker compose` on a VPS
-  you control. No hosted control plane, nothing about your app leaves your infra.
+  or Kubernetes via `kubectl`. No hosted control plane, nothing about your app
+  leaves your infra.
 - **Crash-safe by construction.** Every reconciliation event is logged *before*
   any provider is called. Restart after a crash and `ramifyd` replays whatever
   didn't finish — nothing is silently lost or double-applied.
@@ -42,9 +43,10 @@ together, automatically.
 - **Actually expires.** Every successful apply sets or refreshes a TTL. A reaper
   loop enforces it on a schedule — no forgotten environments quietly burning
   compute for months.
-- **One job.** Not a PaaS, not a dashboard, not a hosted service — a focused
-  control plane for one thing: ephemeral preview environments driven by git
-  activity.
+- **One job.** Not a PaaS, not a hosted service — a focused control plane for
+  one thing: ephemeral preview environments driven by git activity. There is a
+  built-in dashboard, but it is a view onto the same control API the CLI uses,
+  not a second product.
 
 ### Ramify vs. the alternatives
 
@@ -55,6 +57,13 @@ together, automatically.
 | Auto-expiry (TTL) | Built in — a reaper tears environments down on schedule | Not the focus | Not the focus |
 | Deploys to | Infrastructure you already run, over SSH | Infrastructure you already run | Infrastructure you already run |
 | Scope | One job: ephemeral envs from git activity | Tunneling, primarily | General app hosting/PaaS |
+
+## Operational dashboard
+
+The built-in dashboard is available at `/dashboard/` on the optional TCP API
+listener. It provides environment filtering, status/TTL visibility, preview
+links, sleep/wake/destroy actions, and auto-refreshing deployment logs. It uses
+the configured TCP bearer token and stores it only in the browser's local storage.
 
 ## Documentation
 
@@ -84,9 +93,9 @@ under `providers/` is a concrete implementation of one of them.
 ```mermaid
 flowchart TB
     Core["Core<br/>reconciler · reaper · sqlite store<br/><i>idempotent apply · crash-safe event log · TTL enforcement</i>"]
-    GH["GitProvider<br/>GitHub webhooks + PR comments"]
-    DP["DeployProvider<br/>SSH + Docker Compose"]
-    DNS["DNSProvider<br/>Cloudflare, TXT-owned records"]
+    GH["GitProvider<br/>GitHub · GitLab · Bitbucket<br/>webhooks + PR/MR comments"]
+    DP["DeployProvider<br/>SSH + Docker Compose or Kubernetes"]
+    DNS["DNSProvider<br/>Cloudflare · Route 53 · Google Cloud DNS · DigitalOcean"]
     CERT["CertificateProvider<br/>ACME / Let's Encrypt DNS-01"]
     NOT["NotifierProvider<br/>PR status comments"]
 
@@ -97,8 +106,9 @@ flowchart TB
     Core --> NOT
 ```
 
-Webhook deliveries are durably stored and deduplicated by `X-GitHub-Delivery`
-before they are acknowledged. Failed events carry an attempt count, a next-retry
+Webhook deliveries are durably stored and deduplicated by the delivery ID the
+configured Git host sends — `X-GitHub-Delivery`, `X-Gitlab-Event-UUID`, or
+`X-Hook-UUID` — before they are acknowledged. Failed events carry an attempt count, a next-retry
 time, and their last error; the daemon retries due work continuously with
 exponential backoff and jitter, and retires permanently-failed events to a
 dead-letter state rather than blocking the queue. `/healthz`, `/readyz`, and a
@@ -172,8 +182,10 @@ ramify --version
 
 ## Quickstart
 
-Prerequisites: a GitHub repo, a Cloudflare-managed DNS zone, and one VPS you
-control with Docker + Compose.
+Prerequisites: a repository on GitHub, GitLab, or Bitbucket; a DNS zone managed
+by Cloudflare, Route 53, Google Cloud DNS, or DigitalOcean; and somewhere to run
+the previews — either one VPS you control with Docker Compose, or a Kubernetes
+cluster your machine has `kubectl` access to.
 
 ```sh
 # 1. Install (see above) — or, from source:
@@ -221,12 +233,12 @@ by default, or a token-protected TCP address via `--addr`/`--token`.
 | Command | Flags | Does |
 |---|---|---|
 | `ramify install` | `--config-dir`, `--data-dir` | Creates the config/data directories, ready for `init` |
-| `ramify init` | `--output`, `--base-domain`, `--github-*`, `--deploy-ssh-*`, `--deploy-compose-file`, `--dns-zone`, `--cloudflare-token`, `--acme-email`, `--default-ttl`… | Generates `ramify.yaml` non-interactively, scriptable end to end |
+| `ramify init` | `--output`, `--git-*`, `--dns-*`, `--deploy-ssh-*`, `--deploy-compose-file`, `--acme-email`, `--default-ttl`… | Generates `ramify.yaml` non-interactively, scriptable end to end |
 | `ramify list` | `--project` | Lists every preview environment as a table |
 | `ramify status <branch>` | `--project` | Shows full detail for one branch's environment |
 | `ramify logs <branch>` | `--project` | Prints the deployed container's logs |
 | `ramify destroy <branch>` | `--project`, `-y`/`--yes` | Tears an environment down manually, with a confirmation prompt |
-| `ramify doctor` | `--config` | Validates config, Cloudflare, SSH, webhook secret, and ACME connectivity — independently, with named failures |
+| `ramify doctor` | `--config` | Validates config, the configured DNS provider, SSH, webhook secret, and ACME connectivity — independently, with named failures |
 | `ramify backup` | `--config`, `--output` | Creates a consistent SQLite backup without overwriting an existing destination |
 
 Full flags per command: `ramify <command> --help`.
@@ -244,17 +256,20 @@ reaper:
   interval: 5m
   default_ttl: 72h                 # TTL applied to a new environment
 
-github:
-  token: $RAMIFY_GITHUB_TOKEN
-  webhook_secret: $RAMIFY_GITHUB_WEBHOOK_SECRET
+git:
+  provider: github                 # github, gitlab, or bitbucket
+  token: $RAMIFY_GIT_TOKEN
+  webhook_secret: $RAMIFY_GIT_WEBHOOK_SECRET
 
 deploy:
+  provider: compose                # compose or kubernetes
   ssh_addr: deploy-host.example.com:22
   compose_file: /srv/ramify/docker-compose.yml
   dns_target: 203.0.113.10
 
 dns:
   zone: preview.example.com
+  provider: cloudflare
   cloudflare_api_token: $RAMIFY_CLOUDFLARE_API_TOKEN
 
 acme:
@@ -274,9 +289,9 @@ internal/api/       local control API (webhook receiver + environments CRUD)
 internal/config/    YAML config loader ($NAME secret resolution, validation)
 internal/metrics/   process counters served in Prometheus text format
 providers/providerapi/   the five provider interfaces core depends on
-providers/git/github/    GitProvider — webhooks, PR comments
-providers/deploy/compose/  DeployProvider — SSH + docker compose
-providers/dns/cloudflare/  DNSProvider — TXT ownership registry
+providers/git/            GitProvider — GitHub, GitLab, Bitbucket webhooks + comments
+providers/deploy/           DeployProvider — SSH + docker compose or Kubernetes
+providers/dns/             DNSProvider — Cloudflare, Route 53, Google Cloud DNS, DigitalOcean
 providers/cert/acme/       CertificateProvider — Let's Encrypt via DNS-01
 providers/notify/githubcomment/  NotifierProvider — PR status comments
 test/contract/      shared behavioral suites every provider implementation must pass
@@ -298,10 +313,9 @@ through create → verify → destroy against a live local ACME CA (Pebble), a l
 DNS server (CoreDNS), an SSH deploy target, and a mock GitHub API. The CI badge
 at the top of this README is the current answer to whether it passes.
 
-Not built yet, and intentionally out of scope for now: Kubernetes as a deploy
-target, GitLab/Bitbucket, DNS providers beyond Cloudflare, *automatic*
-idle-detection and sleep (manual sleep/wake already exists on the control API), a
-web dashboard, and an out-of-process plugin protocol.
+Not built yet, and intentionally out of scope for now: *automatic*
+idle-detection and sleep (manual sleep/wake already exists on the control API),
+and an out-of-process plugin protocol.
 
 ## Development
 
