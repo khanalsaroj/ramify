@@ -29,8 +29,11 @@ import (
 	"github.com/khanalsaroj/ramify/providers/cert/acme"
 	"github.com/khanalsaroj/ramify/providers/deploy/compose"
 	"github.com/khanalsaroj/ramify/providers/dns/cloudflare"
+	"github.com/khanalsaroj/ramify/providers/git/bitbucket"
 	"github.com/khanalsaroj/ramify/providers/git/github"
+	"github.com/khanalsaroj/ramify/providers/git/gitlab"
 	"github.com/khanalsaroj/ramify/providers/notify/githubcomment"
+	"github.com/khanalsaroj/ramify/providers/providerapi"
 )
 
 // version is the ramifyd build version, overridden at build time via -ldflags.
@@ -88,7 +91,10 @@ func run(configPath string, logger *slog.Logger) error {
 		}
 	}()
 
-	gitProvider := github.NewWithToken(cfg.GitHub.Token, cfg.GitHub.WebhookSecret)
+	gitProvider, err := newGitProvider(cfg)
+	if err != nil {
+		return err
+	}
 
 	dnsProvider, err := cloudflare.New(cfg.DNS.CloudflareAPIToken)
 	if err != nil {
@@ -154,6 +160,19 @@ func run(configPath string, logger *slog.Logger) error {
 		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
+}
+
+func newGitProvider(cfg *config.Config) (providerapi.GitProvider, error) {
+	switch cfg.Git.Provider {
+	case "github":
+		return github.NewWithToken(cfg.Git.Token, cfg.Git.WebhookSecret), nil
+	case "gitlab":
+		return gitlab.New(cfg.Git.Token, cfg.Git.WebhookSecret, cfg.Git.BaseURL), nil
+	case "bitbucket":
+		return bitbucket.New(cfg.Git.Token, cfg.Git.WebhookSecret, cfg.Git.BaseURL), nil
+	default:
+		return nil, fmt.Errorf("unsupported git provider %q", cfg.Git.Provider)
+	}
 }
 
 func runEventLoop(ctx context.Context, st store.Store, reconciler *core.Reconciler, logger *slog.Logger, metricSet *metrics.Metrics, eventRetention time.Duration) {

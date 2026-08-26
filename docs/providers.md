@@ -9,7 +9,7 @@ one or more of those.
 
 | Interface | Built-in implementation |
 |---|---|
-| `GitProvider` | `providers/git/github` |
+| `GitProvider` | `providers/git/github`, `providers/git/gitlab`, `providers/git/bitbucket` |
 | `DeployProvider` | `providers/deploy/compose` (SSH + `docker compose`) |
 | `DNSProvider` | `providers/dns/cloudflare` |
 | `CertificateProvider` | `providers/cert/acme` (Let's Encrypt via DNS-01) |
@@ -114,6 +114,24 @@ Point this at a disposable host (or the same `test/e2e` fake-`docker`-shim sshd
 image, run standalone) — the contract suite really does run `docker compose up`
 and `down` against whatever `compose_file` you configure.
 
+### Git hosting providers
+
+Select the provider in `ramify.yaml`:
+
+```yaml
+git:
+  provider: gitlab # github, gitlab, or bitbucket
+  token: $RAMIFY_GIT_TOKEN
+  webhook_secret: $RAMIFY_GIT_WEBHOOK_SECRET
+  base_url: https://gitlab.example.com # optional; useful for self-hosted GitLab
+```
+
+The webhook URL is `/webhooks/<provider>`, for example `/webhooks/gitlab`.
+GitHub uses `X-Hub-Signature-256`, GitLab uses its token header, and Bitbucket
+Cloud uses its HMAC hook signature. The normalized core behavior is identical:
+branch pushes create/update environments, merge/pull request updates refresh them,
+and closed requests destroy them.
+
 ### GitHub
 
 `RunGitProviderContract` needs a set of pre-signed webhook fixtures, not a live
@@ -123,6 +141,10 @@ account (there's no "run a webhook against yourself" flow) — see
 server standing in for the real API; there isn't a separate "real account" contract
 run for it, since posting a comment to a real PR from a test suite would be a
 visible side effect on someone's real repository.
+
+GitLab and Bitbucket use the same provider contract. Their API calls should be
+verified against a disposable project because comment posting is an external side
+effect.
 
 ## The e2e harness
 

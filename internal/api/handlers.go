@@ -66,7 +66,12 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ev, err := s.git.ParseWebhook(r.Context(), body, r.Header.Get("X-Hub-Signature-256"))
+	providerName := chi.URLParam(r, "provider")
+	if providerName == "" {
+		providerName = "github"
+	}
+	signatureHeader, deliveryHeader := webhookHeaders(providerName)
+	ev, err := s.git.ParseWebhook(r.Context(), body, r.Header.Get(signatureHeader))
 	switch {
 	case errors.Is(err, providerapi.ErrInvalidWebhookSignature):
 		s.metrics.WebhookRejected.Add(1)
@@ -87,9 +92,9 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusInternalServerError, "encoding webhook event")
 		return
 	}
-	deliveryID := r.Header.Get("X-GitHub-Delivery")
+	deliveryID := r.Header.Get(deliveryHeader)
 	if deliveryID == "" {
-		s.writeError(w, http.StatusBadRequest, "missing GitHub delivery ID")
+		s.writeError(w, http.StatusBadRequest, "missing webhook delivery ID")
 		return
 	}
 	firstRetry := time.Now().UTC()
@@ -114,6 +119,17 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 
 	go s.processEvent(inbox.ID, ev) //nolint:gosec // durable inbox is persisted before this worker starts
 	w.WriteHeader(http.StatusAccepted)
+}
+
+func webhookHeaders(provider string) (signature, delivery string) {
+	switch provider {
+	case "gitlab":
+		return "X-Gitlab-Token", "X-Gitlab-Event-UUID"
+	case "bitbucket":
+		return "X-Hook-Signature", "X-Hook-UUID"
+	default:
+		return "X-Hub-Signature-256", "X-GitHub-Delivery"
+	}
 }
 
 func (s *Server) processEvent(eventID string, ev providerapi.Event) {

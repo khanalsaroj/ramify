@@ -299,7 +299,7 @@ DNS server (CoreDNS), an SSH deploy target, and a mock GitHub API. The CI badge
 at the top of this README is the current answer to whether it passes.
 
 Not built yet, and intentionally out of scope for now: Kubernetes as a deploy
-target, GitLab/Bitbucket, DNS providers beyond Cloudflare, *automatic*
+target, DNS providers beyond Cloudflare, *automatic*
 idle-detection and sleep (manual sleep/wake already exists on the control API), a
 web dashboard, and an out-of-process plugin protocol.
 

@@ -94,7 +94,8 @@ func (s *Server) routes() chi.Router {
 	r.Get("/healthz", s.handleHealthz)
 	r.Get("/readyz", s.handleReadyz)
 	r.Get("/metrics", s.handleMetrics)
-	r.Post("/webhooks/github", s.handleWebhook)
+	// The provider segment also preserves the existing /webhooks/github URL.
+	r.Post("/webhooks/{provider}", s.handleWebhook)
 	r.Route("/environments", func(r chi.Router) {
 		r.Get("/", s.handleListEnvironments)
 		r.Post("/", s.handleCreateEnvironment)

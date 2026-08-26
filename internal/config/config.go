@@ -21,6 +21,7 @@ type Config struct {
 	Store      StoreConfig  `yaml:"store"`
 	Reaper     ReaperConfig `yaml:"reaper"`
 	GitHub     GitHubConfig `yaml:"github"`
+	Git        GitConfig    `yaml:"git"`
 	Deploy     DeployConfig `yaml:"deploy"`
 	DNS        DNSConfig    `yaml:"dns"`
 	ACME       ACMEConfig   `yaml:"acme"`
@@ -51,6 +52,15 @@ type ReaperConfig struct {
 type GitHubConfig struct {
 	Token         string `yaml:"token"`
 	WebhookSecret string `yaml:"webhook_secret"`
+}
+
+// GitConfig selects the Git hosting provider. The legacy github block remains
+// supported so existing installations do not need to change immediately.
+type GitConfig struct {
+	Provider      string `yaml:"provider"`
+	Token         string `yaml:"token"`
+	WebhookSecret string `yaml:"webhook_secret"`
+	BaseURL       string `yaml:"base_url,omitempty"`
 }
 
 // DeployConfig configures providers/deploy/compose.
@@ -98,7 +108,7 @@ type LogConfig struct {
 
 // secretFields lists the config field names (not values) that hold secrets, purely
 // for logging: §6 requires that Ramify log secret *names*, never values.
-var secretFields = []string{"github.token", "github.webhook_secret", "dns.cloudflare_api_token"}
+var secretFields = []string{"git.token", "git.webhook_secret", "github.token", "github.webhook_secret", "dns.cloudflare_api_token"}
 
 // LogValue implements slog.LogValuer, redacting every field in secretFields so
 // logging a Config never leaks a secret value, only which fields were configured.
@@ -127,17 +137,28 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("config: parsing %s: %w", path, err)
 	}
 
-	resolved, err := resolveEnv(cfg.GitHub.Token)
-	if err != nil {
-		return nil, fmt.Errorf("config: github.token: %w", err)
+	if cfg.Git.Provider == "" {
+		cfg.Git.Provider = "github"
 	}
-	cfg.GitHub.Token = resolved
+	if cfg.Git.Token == "" {
+		cfg.Git.Token = cfg.GitHub.Token
+	}
+	if cfg.Git.WebhookSecret == "" {
+		cfg.Git.WebhookSecret = cfg.GitHub.WebhookSecret
+	}
+	resolved, err := resolveEnv(cfg.Git.Token)
+	if err != nil {
+		return nil, fmt.Errorf("config: git.token: %w", err)
+	}
+	cfg.Git.Token = resolved
 
-	resolved, err = resolveEnv(cfg.GitHub.WebhookSecret)
+	resolved, err = resolveEnv(cfg.Git.WebhookSecret)
 	if err != nil {
-		return nil, fmt.Errorf("config: github.webhook_secret: %w", err)
+		return nil, fmt.Errorf("config: git.webhook_secret: %w", err)
 	}
-	cfg.GitHub.WebhookSecret = resolved
+	cfg.Git.WebhookSecret = resolved
+	cfg.GitHub.Token = cfg.Git.Token
+	cfg.GitHub.WebhookSecret = cfg.Git.WebhookSecret
 
 	resolved, err = resolveEnv(cfg.DNS.CloudflareAPIToken)
 	if err != nil {
@@ -160,6 +181,18 @@ func Load(path string) (*Config, error) {
 // Validate reports whether every field Ramify requires at startup is present.
 func (c Config) Validate() error {
 	var missing []string
+	gitProvider := c.Git.Provider
+	gitToken := c.Git.Token
+	gitSecret := c.Git.WebhookSecret
+	if gitProvider == "" {
+		gitProvider = "github"
+	}
+	if gitToken == "" {
+		gitToken = c.GitHub.Token
+	}
+	if gitSecret == "" {
+		gitSecret = c.GitHub.WebhookSecret
+	}
 	if c.BaseDomain == "" {
 		missing = append(missing, "base_domain")
 	}
@@ -172,11 +205,14 @@ func (c Config) Validate() error {
 	if c.Server.TCPAddr != "" && c.Server.TCPToken == "" {
 		missing = append(missing, "server.tcp_token (required when server.tcp_addr is set)")
 	}
-	if c.GitHub.Token == "" {
-		missing = append(missing, "github.token")
+	if gitToken == "" {
+		missing = append(missing, "git.token")
 	}
-	if c.GitHub.WebhookSecret == "" {
-		missing = append(missing, "github.webhook_secret")
+	if gitSecret == "" {
+		missing = append(missing, "git.webhook_secret")
+	}
+	if gitProvider != "github" && gitProvider != "gitlab" && gitProvider != "bitbucket" {
+		missing = append(missing, "git.provider (github, gitlab, or bitbucket)")
 	}
 	if c.Deploy.SSHAddr == "" {
 		missing = append(missing, "deploy.ssh_addr")

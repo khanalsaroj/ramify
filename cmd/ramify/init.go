@@ -23,6 +23,8 @@ func newInitCmd() *cobra.Command {
 		eventRetention       time.Duration
 		githubToken          string
 		githubWebhookSecret  string
+		gitProvider          string
+		gitBaseURL           string
 		deploySSHAddr        string
 		deploySSHUser        string
 		deploySSHKeyPath     string
@@ -48,7 +50,7 @@ func newInitCmd() *cobra.Command {
 				Server:     config.ServerConfig{SocketPath: socketPath},
 				Store:      config.StoreConfig{Path: storePath},
 				Reaper:     config.ReaperConfig{Interval: 5 * time.Minute, DefaultTTL: reaperDefaultTTL, EventRetention: eventRetention},
-				GitHub:     config.GitHubConfig{Token: githubToken, WebhookSecret: githubWebhookSecret},
+				Git:        config.GitConfig{Provider: gitProvider, Token: githubToken, WebhookSecret: githubWebhookSecret, BaseURL: gitBaseURL},
 				Deploy: config.DeployConfig{
 					SSHAddr: deploySSHAddr, SSHUser: deploySSHUser, SSHPrivateKeyPath: deploySSHKeyPath,
 					SSHKnownHostsPath: deploySSHKnownHosts, ComposeFile: deployComposeFile, DNSTarget: deployDNSTarget, CertificateDir: deployCertificateDir,
@@ -82,6 +84,8 @@ func newInitCmd() *cobra.Command {
 	cmd.Flags().DurationVar(&eventRetention, "event-retention", 720*time.Hour, "retention for completed event history")
 	cmd.Flags().StringVar(&githubToken, "github-token", "", "GitHub token used to post PR comments")
 	cmd.Flags().StringVar(&githubWebhookSecret, "github-webhook-secret", "", "GitHub webhook HMAC secret (required)")
+	cmd.Flags().StringVar(&gitProvider, "git-provider", "github", "Git provider: github, gitlab, or bitbucket")
+	cmd.Flags().StringVar(&gitBaseURL, "git-base-url", "", "Git provider base URL (for self-hosted GitLab or Bitbucket)")
 	cmd.Flags().StringVar(&deploySSHAddr, "deploy-ssh-addr", "", "deploy host SSH address, host:port (required)")
 	cmd.Flags().StringVar(&deploySSHUser, "deploy-ssh-user", "ramify", "deploy host SSH user")
 	cmd.Flags().StringVar(&deploySSHKeyPath, "deploy-ssh-key", "", "path to the SSH private key used to reach the deploy host")
