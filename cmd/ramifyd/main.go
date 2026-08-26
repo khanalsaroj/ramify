@@ -29,6 +29,9 @@ import (
 	"github.com/khanalsaroj/ramify/providers/cert/acme"
 	"github.com/khanalsaroj/ramify/providers/deploy/compose"
 	"github.com/khanalsaroj/ramify/providers/dns/cloudflare"
+	"github.com/khanalsaroj/ramify/providers/dns/digitalocean"
+	"github.com/khanalsaroj/ramify/providers/dns/googlecloud"
+	"github.com/khanalsaroj/ramify/providers/dns/route53"
 	"github.com/khanalsaroj/ramify/providers/git/bitbucket"
 	"github.com/khanalsaroj/ramify/providers/git/github"
 	"github.com/khanalsaroj/ramify/providers/git/gitlab"
@@ -96,9 +99,9 @@ func run(configPath string, logger *slog.Logger) error {
 		return err
 	}
 
-	dnsProvider, err := cloudflare.New(cfg.DNS.CloudflareAPIToken)
+	dnsProvider, err := newDNSProvider(ctx, cfg)
 	if err != nil {
-		return fmt.Errorf("constructing cloudflare provider: %w", err)
+		return fmt.Errorf("constructing dns provider: %w", err)
 	}
 
 	deployProvider, err := newDeployProvider(cfg, logger)
@@ -160,6 +163,21 @@ func run(configPath string, logger *slog.Logger) error {
 		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
+}
+
+func newDNSProvider(ctx context.Context, cfg *config.Config) (providerapi.DNSProvider, error) {
+	switch cfg.DNS.Provider {
+	case "cloudflare":
+		return cloudflare.New(cfg.DNS.APIToken)
+	case "route53":
+		return route53.New(ctx, cfg.DNS.ZoneID)
+	case "googlecloud":
+		return googlecloud.New(ctx, cfg.DNS.Project, cfg.DNS.ZoneID)
+	case "digitalocean":
+		return digitalocean.New(cfg.DNS.APIToken, cfg.DNS.Zone), nil
+	default:
+		return nil, fmt.Errorf("unsupported dns provider %q", cfg.DNS.Provider)
+	}
 }
 
 func newGitProvider(cfg *config.Config) (providerapi.GitProvider, error) {

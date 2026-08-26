@@ -11,7 +11,7 @@ one or more of those.
 |---|---|
 | `GitProvider` | `providers/git/github`, `providers/git/gitlab`, `providers/git/bitbucket` |
 | `DeployProvider` | `providers/deploy/compose` (SSH + `docker compose`) |
-| `DNSProvider` | `providers/dns/cloudflare` |
+| `DNSProvider` | `providers/dns/cloudflare`, `providers/dns/route53`, `providers/dns/googlecloud`, `providers/dns/digitalocean` |
 | `CertificateProvider` | `providers/cert/acme` (Let's Encrypt via DNS-01) |
 | `NotifierProvider` | `providers/notify/githubcomment` |
 
@@ -45,6 +45,24 @@ against a small in-memory test double standing in for the network:
 The fakes prove the provider's own logic (idempotency, error wrapping, ownership
 checks) is correct independent of the network. They don't prove the real API calls
 are correct. To check that, point the real provider at a real account:
+
+### DNS providers
+
+DNS provider selection is configured independently from the Git provider:
+
+```yaml
+dns:
+  provider: route53 # cloudflare, route53, googlecloud, or digitalocean
+  zone: preview.example.com
+  zone_id: Z123456789 # Google managed-zone name or optional Route 53 hosted-zone ID
+  project: my-gcp-project # Google Cloud only
+  api_token: $RAMIFY_DNS_TOKEN # DigitalOcean; Cloudflare may use cloudflare_api_token
+```
+
+Route 53 uses the AWS SDK default credential chain. Google Cloud DNS uses
+Application Default Credentials. DigitalOcean uses a bearer API token. All four
+providers implement the same TXT ownership-marker behavior, so Ramify refuses to
+overwrite an unmanaged A/CNAME record and refuses deletes with the wrong tag.
 
 ### Cloudflare
 

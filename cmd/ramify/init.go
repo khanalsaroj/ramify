@@ -34,6 +34,10 @@ func newInitCmd() *cobra.Command {
 		deployCertificateDir string
 		dnsZone              string
 		cloudflareAPIToken   string
+		dnsProvider          string
+		dnsAPIToken          string
+		dnsProject           string
+		dnsZoneID            string
 		acmeEmail            string
 		acmeCADirURL         string
 	)
@@ -55,7 +59,7 @@ func newInitCmd() *cobra.Command {
 					SSHAddr: deploySSHAddr, SSHUser: deploySSHUser, SSHPrivateKeyPath: deploySSHKeyPath,
 					SSHKnownHostsPath: deploySSHKnownHosts, ComposeFile: deployComposeFile, DNSTarget: deployDNSTarget, CertificateDir: deployCertificateDir,
 				},
-				DNS:  config.DNSConfig{Zone: dnsZone, CloudflareAPIToken: cloudflareAPIToken},
+				DNS:  config.DNSConfig{Provider: dnsProvider, Zone: dnsZone, APIToken: firstNonEmpty(dnsAPIToken, cloudflareAPIToken), CloudflareAPIToken: cloudflareAPIToken, Project: dnsProject, ZoneID: dnsZoneID},
 				ACME: config.ACMEConfig{Email: acmeEmail, CADirURL: acmeCADirURL},
 			}
 
@@ -95,8 +99,21 @@ func newInitCmd() *cobra.Command {
 	cmd.Flags().StringVar(&deployCertificateDir, "deploy-certificate-dir", "", "remote directory for installed TLS certificate material")
 	cmd.Flags().StringVar(&dnsZone, "dns-zone", "", "Cloudflare DNS zone (required)")
 	cmd.Flags().StringVar(&cloudflareAPIToken, "cloudflare-token", "", "Cloudflare API token")
+	cmd.Flags().StringVar(&dnsProvider, "dns-provider", "cloudflare", "DNS provider: cloudflare, route53, googlecloud, or digitalocean")
+	cmd.Flags().StringVar(&dnsAPIToken, "dns-token", "", "DNS API token (DigitalOcean; Cloudflare uses --cloudflare-token)")
+	cmd.Flags().StringVar(&dnsProject, "dns-project", "", "Google Cloud project ID")
+	cmd.Flags().StringVar(&dnsZoneID, "dns-zone-id", "", "Hosted/managed zone ID (Google Cloud or Route 53)")
 	cmd.Flags().StringVar(&acmeEmail, "acme-email", "", "contact email for the ACME account (required)")
 	cmd.Flags().StringVar(&acmeCADirURL, "acme-ca-dir-url", "https://acme-v02.api.letsencrypt.org/directory", "ACME directory URL")
 
 	return cmd
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }

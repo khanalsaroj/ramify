@@ -53,8 +53,15 @@ deploy:
   certificate_dir: /srv/ramify/certificates
 
 dns:
+  # Supported values: cloudflare, route53, googlecloud, digitalocean.
+  provider: cloudflare
   zone: preview.example.com
   cloudflare_api_token: $RAMIFY_CLOUDFLARE_API_TOKEN
+  # For DigitalOcean use api_token. For Google Cloud use project + zone_id
+  # and Application Default Credentials. Route 53 uses the AWS credential chain.
+  api_token: ""
+  project: ""
+  zone_id: ""
 
 acme:
   email: ops@example.com

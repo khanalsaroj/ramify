@@ -423,9 +423,9 @@ footer a:hover{color:var(--accent);}
         <div class="hub-core">Reconciler · Reaper<span class="sub">idempotent apply · TTL enforcement · crash-safe event log</span></div>
         <div class="bus"></div>
         <div class="provider-row">
-          <div class="provider-card"><div class="name">GitProvider</div><div class="impl">GitHub webhooks + PR comments</div></div>
+          <div class="provider-card"><div class="name">GitProvider</div><div class="impl">GitHub, GitLab + Bitbucket</div></div>
           <div class="provider-card"><div class="name">DeployProvider</div><div class="impl">SSH + Docker Compose</div></div>
-          <div class="provider-card"><div class="name">DNSProvider</div><div class="impl">Cloudflare, TXT-owned records</div></div>
+          <div class="provider-card"><div class="name">DNSProvider</div><div class="impl">Cloudflare, Route 53, Google + DO</div></div>
           <div class="provider-card"><div class="name">CertificateProvider</div><div class="impl">ACME / Let's Encrypt DNS-01</div></div>
           <div class="provider-card"><div class="name">NotifierProvider</div><div class="impl">GitHub PR status comments</div></div>
         </div>
@@ -694,9 +694,9 @@ sudo systemctl enable --now ramifyd</code></pre>
         <table>
           <thead><tr><th>Interface</th><th>Built-in implementation</th><th>Notes</th></tr></thead>
           <tbody>
-            <tr><td><code>GitProvider</code></td><td><code>providers/git/github</code></td><td>Webhook HMAC verification, PR event parsing</td></tr>
+            <tr><td><code>GitProvider</code></td><td><code>providers/git/{github,gitlab,bitbucket}</code></td><td>Webhook verification, PR/MR event parsing</td></tr>
             <tr><td><code>DeployProvider</code></td><td><code>providers/deploy/compose</code></td><td>SSH + <code>docker compose</code></td></tr>
-            <tr><td><code>DNSProvider</code></td><td><code>providers/dns/cloudflare</code></td><td>External-dns-style TXT ownership registry</td></tr>
+            <tr><td><code>DNSProvider</code></td><td><code>providers/dns/{cloudflare,route53,googlecloud,digitalocean}</code></td><td>TXT ownership registry</td></tr>
             <tr><td><code>CertificateProvider</code></td><td><code>providers/cert/acme</code></td><td>Let's Encrypt via ACME DNS-01, shares the DNS provider</td></tr>
             <tr><td><code>NotifierProvider</code></td><td><code>providers/notify/githubcomment</code></td><td>Templated PR status comments</td></tr>
           </tbody>
@@ -878,12 +878,12 @@ EOF</code></pre>
       </details>
       <details class="faq-item">
         <summary>GitLab or Bitbucket instead of GitHub?</summary>
-        <p>Not yet — GitHub is the only <code>GitProvider</code> in the MVP.</p>
+        <p>Yes. Configure <code>git.provider</code> as <code>github</code>, <code>gitlab</code>, or <code>bitbucket</code>.</p>
       </details>
       <details class="faq-item">
         <summary>DNS providers other than Cloudflare?</summary>
-        <p>Not yet — Route 53, Google Cloud DNS, and DigitalOcean DNS are explicitly out of scope for the MVP,
-        deferred behind the same <code>DNSProvider</code> interface Cloudflare implements.</p>
+        <p>Yes. Configure <code>dns.provider</code> as <code>cloudflare</code>, <code>route53</code>,
+        <code>googlecloud</code>, or <code>digitalocean</code>.</p>
       </details>
       <details class="faq-item">
         <summary>Is there a web dashboard?</summary>

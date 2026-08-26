@@ -80,8 +80,12 @@ type DeployConfig struct {
 
 // DNSConfig configures providers/dns/cloudflare.
 type DNSConfig struct {
+	Provider           string `yaml:"provider"`
 	Zone               string `yaml:"zone"`
 	CloudflareAPIToken string `yaml:"cloudflare_api_token"`
+	APIToken           string `yaml:"api_token,omitempty"`
+	Project            string `yaml:"project,omitempty"`
+	ZoneID             string `yaml:"zone_id,omitempty"`
 }
 
 // ACMEConfig configures providers/cert/acme.
@@ -108,7 +112,7 @@ type LogConfig struct {
 
 // secretFields lists the config field names (not values) that hold secrets, purely
 // for logging: §6 requires that Ramify log secret *names*, never values.
-var secretFields = []string{"git.token", "git.webhook_secret", "github.token", "github.webhook_secret", "dns.cloudflare_api_token"}
+var secretFields = []string{"git.token", "git.webhook_secret", "github.token", "github.webhook_secret", "dns.api_token", "dns.cloudflare_api_token"}
 
 // LogValue implements slog.LogValuer, redacting every field in secretFields so
 // logging a Config never leaks a secret value, only which fields were configured.
@@ -160,10 +164,17 @@ func Load(path string) (*Config, error) {
 	cfg.GitHub.Token = cfg.Git.Token
 	cfg.GitHub.WebhookSecret = cfg.Git.WebhookSecret
 
-	resolved, err = resolveEnv(cfg.DNS.CloudflareAPIToken)
-	if err != nil {
-		return nil, fmt.Errorf("config: dns.cloudflare_api_token: %w", err)
+	if cfg.DNS.Provider == "" {
+		cfg.DNS.Provider = "cloudflare"
 	}
+	if cfg.DNS.APIToken == "" {
+		cfg.DNS.APIToken = cfg.DNS.CloudflareAPIToken
+	}
+	resolved, err = resolveEnv(cfg.DNS.APIToken)
+	if err != nil {
+		return nil, fmt.Errorf("config: dns.api_token: %w", err)
+	}
+	cfg.DNS.APIToken = resolved
 	cfg.DNS.CloudflareAPIToken = resolved
 
 	resolved, err = resolveEnv(cfg.Server.TCPToken)
@@ -229,8 +240,21 @@ func (c Config) Validate() error {
 	if c.DNS.Zone == "" {
 		missing = append(missing, "dns.zone")
 	}
-	if c.DNS.CloudflareAPIToken == "" {
-		missing = append(missing, "dns.cloudflare_api_token")
+	dnsProvider := c.DNS.Provider
+	if dnsProvider == "" {
+		dnsProvider = "cloudflare"
+	}
+	if dnsProvider != "googlecloud" && dnsProvider != "route53" && c.DNS.APIToken == "" && c.DNS.CloudflareAPIToken == "" {
+		missing = append(missing, "dns.api_token")
+	}
+	if dnsProvider != "cloudflare" && dnsProvider != "route53" && dnsProvider != "googlecloud" && dnsProvider != "digitalocean" {
+		missing = append(missing, "dns.provider (cloudflare, route53, googlecloud, or digitalocean)")
+	}
+	if dnsProvider == "googlecloud" && c.DNS.Project == "" {
+		missing = append(missing, "dns.project")
+	}
+	if dnsProvider == "googlecloud" && c.DNS.ZoneID == "" {
+		missing = append(missing, "dns.zone_id")
 	}
 	if c.ACME.Email == "" {
 		missing = append(missing, "acme.email")

@@ -86,7 +86,7 @@ flowchart TB
     Core["Core<br/>reconciler · reaper · sqlite store<br/><i>idempotent apply · crash-safe event log · TTL enforcement</i>"]
     GH["GitProvider<br/>GitHub webhooks + PR comments"]
     DP["DeployProvider<br/>SSH + Docker Compose"]
-    DNS["DNSProvider<br/>Cloudflare, TXT-owned records"]
+    DNS["DNSProvider<br/>Cloudflare · Route 53 · Google Cloud DNS · DigitalOcean"]
     CERT["CertificateProvider<br/>ACME / Let's Encrypt DNS-01"]
     NOT["NotifierProvider<br/>PR status comments"]
 
@@ -172,8 +172,9 @@ ramify --version
 
 ## Quickstart
 
-Prerequisites: a GitHub repo, a Cloudflare-managed DNS zone, and one VPS you
-control with Docker + Compose.
+Prerequisites: a supported Git repository, a DNS zone managed by Cloudflare,
+Route 53, Google Cloud DNS, or DigitalOcean, and one VPS you control with Docker
+Compose.
 
 ```sh
 # 1. Install (see above) — or, from source:
@@ -221,7 +222,7 @@ by default, or a token-protected TCP address via `--addr`/`--token`.
 | Command | Flags | Does |
 |---|---|---|
 | `ramify install` | `--config-dir`, `--data-dir` | Creates the config/data directories, ready for `init` |
-| `ramify init` | `--output`, `--base-domain`, `--github-*`, `--deploy-ssh-*`, `--deploy-compose-file`, `--dns-zone`, `--cloudflare-token`, `--acme-email`, `--default-ttl`… | Generates `ramify.yaml` non-interactively, scriptable end to end |
+| `ramify init` | `--output`, `--git-*`, `--dns-*`, `--deploy-ssh-*`, `--deploy-compose-file`, `--acme-email`, `--default-ttl`… | Generates `ramify.yaml` non-interactively, scriptable end to end |
 | `ramify list` | `--project` | Lists every preview environment as a table |
 | `ramify status <branch>` | `--project` | Shows full detail for one branch's environment |
 | `ramify logs <branch>` | `--project` | Prints the deployed container's logs |
@@ -255,6 +256,7 @@ deploy:
 
 dns:
   zone: preview.example.com
+  provider: cloudflare
   cloudflare_api_token: $RAMIFY_CLOUDFLARE_API_TOKEN
 
 acme:
@@ -276,7 +278,7 @@ internal/metrics/   process counters served in Prometheus text format
 providers/providerapi/   the five provider interfaces core depends on
 providers/git/github/    GitProvider — webhooks, PR comments
 providers/deploy/compose/  DeployProvider — SSH + docker compose
-providers/dns/cloudflare/  DNSProvider — TXT ownership registry
+providers/dns/             DNSProvider — Cloudflare, Route 53, Google Cloud DNS, DigitalOcean
 providers/cert/acme/       CertificateProvider — Let's Encrypt via DNS-01
 providers/notify/githubcomment/  NotifierProvider — PR status comments
 test/contract/      shared behavioral suites every provider implementation must pass
@@ -299,7 +301,7 @@ DNS server (CoreDNS), an SSH deploy target, and a mock GitHub API. The CI badge
 at the top of this README is the current answer to whether it passes.
 
 Not built yet, and intentionally out of scope for now: Kubernetes as a deploy
-target, DNS providers beyond Cloudflare, *automatic*
+target, *automatic*
 idle-detection and sleep (manual sleep/wake already exists on the control API), a
 web dashboard, and an out-of-process plugin protocol.
 
