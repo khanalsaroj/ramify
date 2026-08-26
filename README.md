@@ -40,6 +40,10 @@ together, automatically.
 - **Idempotent everything.** Deploy, DNS, and certificate operations are all safe
   to retry. TXT-record ownership tagging (external-dns style) means Ramify never
   touches a DNS record it doesn't own.
+- **Bounded.** An optional `filter:` block decides which branches earn an
+  environment (— glob allow/deny patterns, a pull-request-only switch, a label
+  gate, and a ceiling on how many can be live at once. At the ceiling Ramify
+  rejects the new environment rather than evicting a live one.
 - **Actually expires.** Every successful apply sets or refreshes a TTL. A reaper
   loop enforces it on a schedule — no forgotten environments quietly burning
   compute for months.
@@ -271,6 +275,12 @@ dns:
   zone: preview.example.com
   provider: cloudflare
   cloudflare_api_token: $RAMIFY_CLOUDFLARE_API_TOKEN
+
+filter:                            # optional; omit to deploy every branch push
+  pr_only: false
+  deny_branches: ["dependabot/**"]
+  required_labels: []
+  max_concurrent_envs: 0           # 0 is unlimited
 
 acme:
   email: ops@example.com

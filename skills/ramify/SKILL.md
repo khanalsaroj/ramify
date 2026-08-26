@@ -1,6 +1,6 @@
 ---
 name: ramify
-description: How to set up, configure, operate, and troubleshoot Ramify — the self-hosted preview-environment control plane in this repo (the `ramify` CLI and `ramifyd` daemon). Use when working with ramify.yaml, the ramify CLI, a GitHub/GitLab/Bitbucket webhook, the Compose or Kubernetes deploy target, the Cloudflare/Route 53/Google Cloud/DigitalOcean DNS providers, the operational dashboard, DNS/TLS lifecycle, TTL expiry, or when diagnosing why a preview environment did not come up.
+description: How to set up, configure, operate, and troubleshoot Ramify — the self-hosted preview-environment control plane in this repo (the `ramify` CLI and `ramifyd` daemon). Use when working with ramify.yaml, the ramify CLI, a GitHub/GitLab/Bitbucket webhook, the Compose or Kubernetes deploy target, the Cloudflare/Route 53/Google Cloud/DigitalOcean DNS providers, the operational dashboard, branch/label filtering and environment caps, DNS/TLS lifecycle, TTL expiry, or when diagnosing why a preview environment did not come up.
 ---
 
 # Using Ramify
@@ -325,6 +325,61 @@ actively-pushed branch keeps renewing and only expires `default_ttl` after the
 last push. The reaper sweeps on `reaper.interval`. Environments flagged `pinned`
 are never swept regardless of TTL. `default_ttl: 0` disables expiry entirely.
 
+## Filtering which branches get an environment
+
+By default every branch push creates an environment. On a busy repository that
+means every feature branch holds a DNS record, a certificate, and a running
+container until its TTL lapses. The optional `filter:` block narrows that.
+
+```yaml
+filter:
+  pr_only: false            # ignore pushes with no open pull/merge request
+  allow_branches: []        # globs; empty allows everything deny does not reject
+  deny_branches: []         # globs; evaluated first, and wins over allow
+  required_labels: []       # pull request must carry one of these
+  max_concurrent_envs: 0    # ceiling on live environments; 0 is unlimited
+```
+
+Omitting the block changes nothing, and so does an empty one: every rule is
+opt-in, and the zero value is the behavior Ramify had before the block existed.
+
+**Branch patterns follow the GitHub Actions convention**, which is what you
+already have in your fingers from workflow files: `*` does not cross a slash,
+`**` does. The trap worth internalizing is that `dependabot/*` does **not** match
+`dependabot/npm/lodash`, because Dependabot nests two levels deep. Write
+`dependabot/**`. A malformed pattern matches nothing rather than erroring, so a
+broken deny rule cannot silently let branches through.
+
+**`required_labels` is skipped, not enforced, where the host cannot report
+labels.** Bitbucket Cloud has no pull request labels at all, and a bare branch
+push has no request to carry them. Treating either as "carries no labels" would
+silently disable previews entirely on Bitbucket and for every branch push, so
+Ramify skips the rule instead. Set `pr_only: true` alongside it to close that
+gap. A GitHub or GitLab request that genuinely has zero labels *is* gated —
+that case is known-and-empty, not unknown.
+
+**`max_concurrent_envs` rejects; it never evicts.** At the ceiling, a push for a
+*new* environment is skipped and logged, and nothing already live is touched.
+Pushes to environments that already exist still deploy, so reaching the ceiling
+never freezes a live preview on a stale commit. Destroying an environment or
+letting one expire frees the slot. The count covers every status except
+`destroyed`, including `failed` and `pending`, since both can hold a partially
+created record or container.
+
+**Skips are logged, not commented on the pull request.** A denied branch pattern
+matches on every push to that branch, and commenting each time would bury the
+request in noise for what is a standing operator decision rather than an error.
+The reason appears in `ramifyd`'s logs:
+
+```
+level=INFO msg="reconciler: event skipped by admission policy"
+  project=acme/web branch=dependabot/npm/lodash
+  reason="skipped: branch \"dependabot/npm/lodash\" matches deny pattern \"dependabot/**\""
+```
+
+`ramify init` writes the block from `--pr-only`, `--allow-branches`,
+`--deny-branches`, `--required-labels`, and `--max-concurrent-envs`.
+
 ## Naming rules
 
 Branch names become DNS labels via `internal/core/domain.Normalize`: lowercase →
@@ -411,8 +466,9 @@ behavior any implementation must satisfy, and a new provider should be added to
 its suite rather than only unit-tested.
 
 Still deliberately out of scope: image building, per-hostname routing,
-idle-detection driving automatic sleep, `max_concurrent_envs` eviction,
-out-of-process plugins, notifiers beyond PR comments, and any hosted component
+idle-detection driving automatic sleep, *evicting* an environment to make room
+at the concurrency ceiling (Ramify rejects instead), out-of-process plugins,
+notifiers beyond PR comments, and any hosted component
 — see `DECISIONS.md`.
 
 ## Development

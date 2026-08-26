@@ -678,6 +678,10 @@ sudo systemctl enable --now ramifyd</code></pre>
             <tr><td><code>dns.provider</code></td><td><code>cloudflare</code></td><td><code>cloudflare</code>, <code>route53</code>, <code>googlecloud</code>, or <code>digitalocean</code></td></tr>
             <tr><td><code>dns.zone</code> / <code>cloudflare_api_token</code></td><td><code>preview.example.com</code>, <code>$RAMIFY_CLOUDFLARE_API_TOKEN</code></td><td>Zone, and the API token for Cloudflare or DigitalOcean. Route&nbsp;53 and Google Cloud take credentials from their ambient chains instead</td></tr>
             <tr><td><code>acme.email</code> / <code>ca_dir_url</code></td><td><code>ops@example.com</code>, Let's Encrypt directory URL</td><td>ACME account contact and directory — point at the staging directory while testing</td></tr>
+            <tr><td><code>filter.pr_only</code></td><td><code>false</code></td><td>Ignore branch pushes with no open pull request</td></tr>
+            <tr><td><code>filter.allow_branches</code> / <code>deny_branches</code></td><td><code>["dependabot/**"]</code></td><td>Branch globs, GitHub Actions convention (<code>*</code> stops at a slash, <code>**</code> does not). Deny is evaluated first and wins</td></tr>
+            <tr><td><code>filter.required_labels</code></td><td><code>["preview"]</code></td><td>Deploy a pull request only if it carries one of these. Skipped where the host has no labels (Bitbucket Cloud, and bare branch pushes)</td></tr>
+            <tr><td><code>filter.max_concurrent_envs</code></td><td><code>0</code></td><td>Ceiling on live environments. At the ceiling a new environment is rejected &mdash; never evicted; <code>0</code> is unlimited</td></tr>
             <tr><td><code>notify.comment_templates</code></td><td><code>{}</code></td><td>Optional Go <code>text/template</code> overrides per notification kind (ready/updated/failed/expiring/destroyed)</td></tr>
             <tr><td><code>log.format</code></td><td><code>json</code> / <code>text</code></td><td>Leave empty to auto-detect (text on a TTY); or set <code>RAMIFY_LOG_FORMAT</code></td></tr>
           </tbody>

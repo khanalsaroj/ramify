@@ -84,6 +84,45 @@ held in that browser's local storage only. Polling stops while the tab is hidden
 and backs off geometrically when the daemon is unreachable, so a dashboard left
 open overnight is not a load source.
 
+## Limiting which branches deploy
+
+Left alone, every branch push produces an environment holding a DNS record, a
+certificate, and a running container until its TTL lapses. The `filter:` block
+bounds that; omitting it keeps the original behavior.
+
+```yaml
+filter:
+  pr_only: true
+  deny_branches: ["dependabot/**", "renovate/**"]
+  required_labels: ["preview"]
+  max_concurrent_envs: 25
+```
+
+Operationally, three things are worth knowing.
+
+Patterns use the GitHub Actions convention: `*` stops at a slash, `**` does not.
+`dependabot/*` will not stop `dependabot/npm/lodash` — write `dependabot/**`.
+
+`required_labels` is skipped where the host cannot report labels. Bitbucket
+Cloud has no pull request labels, and a branch push has no request to carry
+them, so the gate does nothing there rather than blocking everything. Pair it
+with `pr_only: true` if you need it absolute.
+
+`max_concurrent_envs` rejects rather than evicts. Reaching the ceiling never
+tears down a live preview, and updates to environments that already exist keep
+deploying — so nothing freezes on a stale commit. A slot frees when an
+environment is destroyed or expires. Every status except `destroyed` counts,
+`failed` and `pending` included, since both can hold partially created
+infrastructure.
+
+Skipped events are logged, not commented on the pull request: a denied pattern
+matches on every push to that branch, and a comment each time would be noise for
+a standing operator decision. Grep for the reason:
+
+```sh
+journalctl -u ramifyd | grep "skipped by admission policy"
+```
+
 ## Production security baseline
 
 - Configure `deploy.ssh_known_hosts_path`.
