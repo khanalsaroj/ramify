@@ -11,8 +11,12 @@ base_domain: preview.example.com
 server:
   # Unix socket the control API listens on by default.
   socket_path: /var/run/ramify/ramify.sock
-  # Optional token-protected TCP listener, for remote CLI access. Leave both empty
-  # to disable and use the unix socket only.
+  # Optional token-protected TCP listener, for remote CLI access, and the address
+  # the built-in dashboard is served on at /dashboard/. Leave both empty to
+  # disable and use the unix socket only. Note the dashboard page itself is served
+  # unauthenticated (a browser cannot send a bearer token on a navigation), so put
+  # this listener on a trusted network; every environment route still requires the
+  # token below.
   tcp_addr: ""
   tcp_token: ""
 

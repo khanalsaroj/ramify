@@ -66,11 +66,7 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	providerName := chi.URLParam(r, "provider")
-	if providerName == "" {
-		providerName = "github"
-	}
-	signatureHeader, deliveryHeader := webhookHeaders(providerName)
+	signatureHeader, deliveryHeader := s.webhookHeaders()
 	ev, err := s.git.ParseWebhook(r.Context(), body, r.Header.Get(signatureHeader))
 	switch {
 	case errors.Is(err, providerapi.ErrInvalidWebhookSignature):
@@ -121,15 +117,28 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusAccepted)
 }
 
-func webhookHeaders(provider string) (signature, delivery string) {
-	switch provider {
-	case "gitlab":
-		return "X-Gitlab-Token", "X-Gitlab-Event-UUID"
-	case "bitbucket":
-		return "X-Hook-Signature", "X-Hook-UUID"
-	default:
-		return "X-Hub-Signature-256", "X-GitHub-Delivery"
+// WebhookHeaderNamer is an optional capability a GitProvider implementation may
+// satisfy, checked via a type assertion in webhookHeaders. Each hosting platform
+// puts its signature and delivery ID in differently named headers, and only the
+// provider that verifies the signature knows which ones it reads — deriving them
+// anywhere else lets the two drift apart silently.
+type WebhookHeaderNamer interface {
+	SignatureHeader() string
+	DeliveryHeader() string
+}
+
+// webhookHeaders asks the configured GitProvider which request headers carry its
+// signature and delivery ID, falling back to GitHub's names for a provider that
+// does not implement WebhookHeaderNamer.
+//
+// Note these come from the configured provider, never from the {provider} URL
+// segment: that segment exists only so each platform can be pointed at a URL that
+// looks native to it, and a daemon has exactly one Git provider configured.
+func (s *Server) webhookHeaders() (signature, delivery string) {
+	if namer, ok := s.git.(WebhookHeaderNamer); ok {
+		return namer.SignatureHeader(), namer.DeliveryHeader()
 	}
+	return "X-Hub-Signature-256", "X-GitHub-Delivery"
 }
 
 func (s *Server) processEvent(eventID string, ev providerapi.Event) {

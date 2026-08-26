@@ -29,8 +29,10 @@ depending on the backup for disaster recovery.
 
 ## Durable event processing
 
-Webhook deliveries are stored before acknowledgement and deduplicated by
-`X-GitHub-Delivery`. Failed events record an attempt count, next retry time, and
+Webhook deliveries are stored before acknowledgement and deduplicated by the
+delivery ID the configured Git host sends: `X-GitHub-Delivery` for GitHub,
+`X-Gitlab-Event-UUID` for GitLab, `X-Hook-UUID` for Bitbucket. A delivery that
+arrives without one is rejected, since it cannot be deduplicated on redelivery. Failed events record an attempt count, next retry time, and
 last error. The daemon's event worker retries due work continuously.
 
 An event remaining pending indicates that the desired state has not been confirmed.
@@ -65,11 +67,32 @@ remain, the response carries an `X-Ramify-Next-Offset` header holding the offset
 of the next page; its absence means the last page was reached. The `ramify list`
 command follows these headers automatically and still prints every environment.
 
+## The operational dashboard
+
+Setting `server.tcp_addr` also serves a dashboard at `/dashboard/` on that
+listener. It is embedded in the `ramifyd` binary with no external assets, so it
+needs no separate deployment and works on an air-gapped network.
+
+It shows the same data `ramify list` and `ramify status` return — status, TTL
+countdown, preview host, artifact reference, deploy ref — and performs the same
+sleep, wake, and destroy calls against the same control API. Deployment logs are
+tailed automatically, pausing while you scroll back through them. Destroy requires
+the branch name typed back before it will run.
+
+It authenticates with the `server.tcp_token` value, entered in the browser and
+held in that browser's local storage only. Polling stops while the tab is hidden
+and backs off geometrically when the daemon is unreachable, so a dashboard left
+open overnight is not a load source.
+
 ## Production security baseline
 
 - Configure `deploy.ssh_known_hosts_path`.
 - Keep the Unix socket at mode `0660` with a dedicated group.
 - Require `server.tcp_token` whenever `server.tcp_addr` is configured.
 - Put remote TCP access behind TLS or mTLS.
-- Use zone-scoped Cloudflare tokens and repository-scoped GitHub credentials.
+- Use zone-scoped DNS tokens and repository-scoped Git credentials, whichever providers you configure.
 - Protect the SQLite database and ACME storage directory with mode `0700`/`0600`.
+- Treat `/dashboard/` as public. The dashboard page and the base domain it reads
+  are served without a bearer token, because a browser cannot attach an
+  `Authorization` header to a top-level navigation. No environment data sits
+  behind that exemption, but the listener itself belongs on a trusted network.

@@ -766,6 +766,26 @@ docker compose -f test/e2e/docker-compose.dev.yml down --volumes</code></pre>
         </table>
       </div>
 
+      <h3 style="margin-top:30px;">The operational dashboard</h3>
+      <p class="muted">Set <code>server.tcp_addr</code> and <code>ramifyd</code> serves a dashboard at
+      <code>/dashboard/</code>, embedded in the binary with no external assets, so it works on an air-gapped
+      network as well as it does on a laptop.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Surface</th><th>What it does</th></tr></thead>
+          <tbody>
+            <tr><td>Environment list</td><td>Live status, TTL countdown, and last-updated time, filtered by project, branch, or status</td></tr>
+            <tr><td>Detail panel</td><td>Preview host, artifact reference, deploy ref, and the full lifecycle timestamps</td></tr>
+            <tr><td>Actions</td><td>Sleep, wake, and destroy — destroy requires the branch name typed back</td></tr>
+            <tr><td>Logs</td><td>The deployed container's logs, tailed automatically, pausing when you scroll back</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="muted" style="margin-top:14px;">The page prompts for the same <code>server.tcp_token</code> the CLI
+      uses and keeps it in browser storage only. Every route that reads or changes an environment stays
+      bearer-authenticated; only the static page itself is served unauthenticated, because a browser cannot attach
+      an <code>Authorization</code> header to a top-level navigation.</p>
+
       <h3 style="margin-top:30px;">Durable events, retries, and dead-lettering</h3>
       <p class="muted">A webhook delivery is written to the store <em>before</em> it is acknowledged, and
       deduplicated by its <code>X-GitHub-Delivery</code> header, so a GitHub redelivery can never apply twice.
@@ -797,7 +817,8 @@ docker compose -f test/e2e/docker-compose.dev.yml down --volumes</code></pre>
         <li>Configure <code>deploy.ssh_known_hosts_path</code> — pin the host key rather than trusting it blindly.</li>
         <li>Keep the unix socket at mode <code>0660</code> with a dedicated group.</li>
         <li>Require <code>server.tcp_token</code> whenever <code>server.tcp_addr</code> is set, and put remote TCP access behind TLS or mTLS.</li>
-        <li>Use zone-scoped Cloudflare tokens and repository-scoped GitHub credentials.</li>
+        <li>Use zone-scoped DNS tokens and repository-scoped Git credentials, whichever provider you configure.</li>
+        <li>Treat <code>/dashboard/</code> as public: the page and the base domain it reads are unauthenticated, so put the TCP listener on a trusted network even though every environment route needs the token.</li>
         <li>Protect the SQLite database and the ACME storage directory with mode <code>0700</code>/<code>0600</code>.</li>
       </ul>
       <p class="muted" style="margin-top:14px;">Full detail:
@@ -887,7 +908,10 @@ EOF</code></pre>
       </details>
       <details class="faq-item">
         <summary>Is there a web dashboard?</summary>
-        <p>No, by design — the <code>ramify</code> CLI plus structured logs are the whole interface for the MVP.</p>
+        <p>Yes. <code>ramifyd</code> serves one at <code>/dashboard/</code> on the optional TCP listener, embedded
+        in the binary so there is nothing extra to deploy. It lists and filters environments, opens preview URLs,
+        performs sleep/wake/destroy, and tails deployment logs. The CLI remains the complete interface — the
+        dashboard is a view onto the same control API, not a second source of truth.</p>
       </details>
       <details class="faq-item">
         <summary>What happens if ramifyd crashes mid-deploy?</summary>

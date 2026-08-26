@@ -8,6 +8,12 @@ handful of steps that create external accounts or provision infrastructure (a VP
 a Cloudflare zone, a GitHub webhook) are things only you can do; they're described
 precisely so nothing is left assumed.
 
+This guide follows one concrete path end to end rather than branching at every
+choice. Ramify also supports GitLab and Bitbucket as Git hosts, Route 53, Google
+Cloud DNS and DigitalOcean as DNS providers, and Kubernetes as a deploy target;
+the configuration for each is in [`providers.md`](providers.md). Everything else
+below applies unchanged.
+
 ## Prerequisites
 
 - A GitHub repository you can add a webhook to.
@@ -211,10 +217,16 @@ PR tears the environment down automatically; `ramify destroy your-branch-name`
 does the same thing manually, and `ramify list` shows everything currently
 running.
 
+Once `server.tcp_addr` is set, the same information is available in a browser at
+`/dashboard/` on that listener — environment status and TTLs, preview links,
+sleep/wake/destroy, and live deployment logs. See
+[`operations.md`](operations.md).
+
 ## Troubleshooting
 
 - `ramify doctor` first — it's designed to isolate exactly which piece is broken.
-- `ramify logs your-branch-name` prints the deployed container's logs (requires
-  the Compose deploy provider, which is the only one Ramify ships).
+- `ramify logs your-branch-name` prints the deployed container's logs. Both the
+  Compose and Kubernetes deploy providers support this; a third-party provider
+  that does not implement log retrieval reports that instead.
 - Every log line from `ramifyd` is structured JSON; `RAMIFY_LOG_FORMAT=text` (or
   running it attached to a terminal) switches to human-readable text instead.

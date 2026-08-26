@@ -95,10 +95,17 @@ func (s *Server) routes() chi.Router {
 	r.Get("/healthz", s.handleHealthz)
 	r.Get("/readyz", s.handleReadyz)
 	r.Get("/metrics", s.handleMetrics)
+	// The dashboard is static, read-only, and unauthenticated (see tokenAuth): it
+	// is only the shell that then asks the operator for a bearer token. Register
+	// GET and HEAD alone so no write verb can ever reach the asset handler.
 	r.Get("/dashboard", s.handleDashboard)
+	r.Head("/dashboard", s.handleDashboard)
 	r.Get("/dashboard/config", s.handleDashboardConfig)
-	r.Handle("/dashboard/*", http.HandlerFunc(s.handleDashboard))
-	// The provider segment also preserves the existing /webhooks/github URL.
+	r.Get("/dashboard/*", s.handleDashboard)
+	r.Head("/dashboard/*", s.handleDashboard)
+	// The provider segment also preserves the existing /webhooks/github URL. It is
+	// cosmetic: a daemon has exactly one Git provider configured, and
+	// Server.webhookHeaders asks that provider which headers to read.
 	r.Post("/webhooks/{provider}", s.handleWebhook)
 	r.Route("/environments", func(r chi.Router) {
 		r.Get("/", s.handleListEnvironments)
@@ -198,10 +205,17 @@ func listenUnix(path string) (net.Listener, error) {
 // tokenAuth requires a matching "Authorization: Bearer <token>" header on every
 // request. It exists only for the optional TCP listener; the unix socket relies on
 // filesystem permissions instead.
+//
+// The dashboard's own assets are exempt, and deliberately so: a browser cannot
+// attach an Authorization header to a top-level navigation, so gating the page
+// itself would make it unreachable. What is exempted is a static page and a
+// base-domain string — every route that reads or changes an environment still
+// requires the token, which the page prompts the operator for and sends on the
+// XHRs it makes. Nothing behind this exemption reveals environment data.
 func tokenAuth(token string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/dashboard" || strings.HasPrefix(r.URL.Path, "/dashboard/") {
+			if isDashboardAsset(r.URL.Path) {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -214,4 +228,11 @@ func tokenAuth(token string) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// isDashboardAsset reports whether path is part of the unauthenticated dashboard
+// shell. The prefix is matched on a path boundary so a route such as
+// "/dashboardsecrets" can never inherit the exemption.
+func isDashboardAsset(path string) bool {
+	return path == "/dashboard" || strings.HasPrefix(path, "/dashboard/")
 }

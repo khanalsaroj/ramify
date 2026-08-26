@@ -1,3 +1,13 @@
+// SPDX-License-Identifier: Apache-2.0
+
+// Package googlecloud implements providerapi.DNSProvider against Google Cloud DNS,
+// using a TXT ownership registry in the style of the external-dns project: for
+// every A/CNAME record Ramify manages at a name, a TXT record at that same name
+// carries the OwnershipTag, and DeleteRecord refuses to act unless that TXT
+// content matches.
+//
+// Credentials come from Application Default Credentials, so an operator configures
+// this the same way they configure gcloud.
 package googlecloud
 
 import (
@@ -10,9 +20,17 @@ import (
 	"google.golang.org/api/dns/v1"
 )
 
+// ErrOwnershipMismatch is returned by DeleteRecord when no TXT record at the given
+// name carries a matching OwnershipTag. It is permanent: the record belongs to
+// someone else, and retrying will never make deleting it safe.
 var ErrOwnershipMismatch = providerapi.Permanent(errors.New("google cloud dns: ownership tag mismatch"))
+
+// ErrUnmanagedRecord indicates that a record already exists at a name but is not
+// owned by the Ramify instance attempting to manage it. Permanent for the same
+// reason as ErrOwnershipMismatch: only an operator can resolve the collision.
 var ErrUnmanagedRecord = providerapi.Permanent(errors.New("google cloud dns: unmanaged record collision"))
 
+// Provider implements providerapi.DNSProvider against one Cloud DNS managed zone.
 type Provider struct {
 	service       *dns.Service
 	project, zone string
@@ -20,6 +38,8 @@ type Provider struct {
 
 var _ providerapi.DNSProvider = (*Provider)(nil)
 
+// New constructs a Provider for the given Google Cloud project and managed zone
+// name, authenticating with Application Default Credentials.
 func New(ctx context.Context, project, zone string) (*Provider, error) {
 	s, err := dns.NewService(ctx)
 	if err != nil {
@@ -27,9 +47,21 @@ func New(ctx context.Context, project, zone string) (*Provider, error) {
 	}
 	return &Provider{service: s, project: project, zone: zone}, nil
 }
-func fqdn(s string) string  { return strings.TrimSuffix(s, ".") + "." }
-func txt(s string) string   { return `"` + strings.ReplaceAll(s, `"`, `\"`) + `"` }
-func untxt(s string) string { return strings.Trim(strings.ReplaceAll(s, `\"`, `"`), `"`) }
+func fqdn(s string) string { return strings.TrimSuffix(s, ".") + "." }
+
+// txt renders value as a Cloud DNS TXT rrdata value: a quoted string with any
+// embedded quote escaped.
+func txt(s string) string { return `"` + strings.ReplaceAll(s, `"`, `\"`) + `"` }
+
+// untxt is the inverse of txt. The surrounding quote pair is stripped before the
+// escapes are resolved, never after: unescaping first turns a value that ends in
+// an escaped quote into one that ends in a bare quote, which the trim then eats.
+func untxt(s string) string {
+	if len(s) >= 2 && strings.HasPrefix(s, `"`) && strings.HasSuffix(s, `"`) {
+		s = s[1 : len(s)-1]
+	}
+	return strings.ReplaceAll(s, `\"`, `"`)
+}
 func (p *Provider) records(ctx context.Context, name, typ string) ([]string, *dns.ResourceRecordSet, error) {
 	call := p.service.ResourceRecordSets.List(p.project, p.zone).Name(fqdn(name)).Type(typ).Context(ctx)
 	page, err := call.Do()
@@ -80,8 +112,13 @@ func contains(in []string, v string) bool {
 	}
 	return false
 }
+
+// remove returns in without the value v. It allocates rather than filtering in
+// place: in is the live Rrdatas slice of the record set that callers also pass as
+// the Change deletion, and rewriting that array under it makes Cloud DNS reject
+// the deletion for not matching the record it is deleting.
 func remove(in []string, v string) []string {
-	out := in[:0]
+	out := make([]string, 0, len(in))
 	for _, x := range in {
 		if untxt(x) != v {
 			out = append(out, x)
@@ -90,6 +127,16 @@ func remove(in []string, v string) []string {
 	return out
 }
 
+// sameValues reports whether set already holds exactly the single value.
+func sameValues(existing []string, value string) bool {
+	return len(existing) == 1 && untxt(existing[0]) == value
+}
+
+// EnsureRecord implements providerapi.DNSProvider. For an A/CNAME record it
+// creates or replaces the record and a paired TXT ownership record at the same
+// name, refusing to touch a name that already holds a record Ramify does not own.
+// For a TXT record — used for the ACME DNS-01 challenge — the value is added
+// alongside any existing values, since one name legitimately carries several.
 func (p *Provider) EnsureRecord(ctx context.Context, rec providerapi.DNSRecord) error {
 	if rec.Type != "A" && rec.Type != "CNAME" && rec.Type != "TXT" {
 		return fmt.Errorf("google cloud dns: unsupported record type %s", rec.Type)
@@ -113,8 +160,13 @@ func (p *Provider) EnsureRecord(ctx context.Context, rec providerapi.DNSRecord) 
 	if len(existing) > 0 && !owned {
 		return ErrUnmanagedRecord
 	}
-	if err := p.apply(ctx, set, &dns.ResourceRecordSet{Name: fqdn(rec.Name), Type: rec.Type, Ttl: 60, Rrdatas: []string{rec.Value}}); err != nil {
-		return err
+	// Skip the change when the record already holds exactly this value: Cloud DNS
+	// accepts a no-op delete-and-re-add, but it costs a change transaction and an
+	// entry in the zone's change history on every reconcile.
+	if !sameValues(existing, rec.Value) {
+		if err := p.apply(ctx, set, &dns.ResourceRecordSet{Name: fqdn(rec.Name), Type: rec.Type, Ttl: 60, Rrdatas: []string{rec.Value}}); err != nil {
+			return err
+		}
 	}
 	if !owned {
 		owners = append(owners, rec.OwnershipTag)
@@ -122,6 +174,9 @@ func (p *Provider) EnsureRecord(ctx context.Context, rec providerapi.DNSRecord) 
 	}
 	return nil
 }
+
+// DeleteRecord implements providerapi.DNSProvider, refusing to delete anything not
+// vouched for by a matching TXT ownership record at the same name.
 func (p *Provider) DeleteRecord(ctx context.Context, rec providerapi.DNSRecord) error {
 	owners, ownerSet, err := p.records(ctx, rec.Name, "TXT")
 	if err != nil {
@@ -154,6 +209,9 @@ func (p *Provider) DeleteRecord(ctx context.Context, rec providerapi.DNSRecord) 
 	}
 	return p.apply(ctx, ownerSet, &dns.ResourceRecordSet{Name: fqdn(rec.Name), Type: "TXT", Ttl: 60, Rrdatas: vals(owners, "TXT")})
 }
+
+// ListManagedRecords implements providerapi.DNSProvider, returning every A/CNAME
+// record in zone that has a paired TXT ownership record at the same name.
 func (p *Provider) ListManagedRecords(ctx context.Context, zone string) ([]providerapi.DNSRecord, error) {
 	var out []providerapi.DNSRecord
 	pageToken := ""
