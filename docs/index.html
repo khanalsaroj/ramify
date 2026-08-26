@@ -666,19 +666,24 @@ sudo systemctl enable --now ramifyd</code></pre>
             <tr><td><code>store.path</code></td><td><code>/var/lib/ramify/ramify.db</code></td><td>SQLite state database path</td></tr>
             <tr><td><code>reaper.interval</code></td><td><code>5m</code></td><td>How often the reaper checks for expired environments</td></tr>
             <tr><td><code>reaper.default_ttl</code></td><td><code>72h</code></td><td>TTL applied to a new environment unless overridden</td></tr>
-            <tr><td><code>github.token</code></td><td><code>$RAMIFY_GITHUB_TOKEN</code></td><td>Token used to post PR status comments</td></tr>
-            <tr><td><code>github.webhook_secret</code></td><td><code>$RAMIFY_GITHUB_WEBHOOK_SECRET</code></td><td>HMAC secret configured on the GitHub webhook</td></tr>
-            <tr><td><code>deploy.ssh_addr</code> / <code>ssh_user</code> / <code>ssh_private_key_path</code></td><td><code>host:22</code>, <code>ramify</code>, <code>/etc/ramify/deploy_key</code></td><td>How Ramify reaches the deploy host</td></tr>
-            <tr><td><code>deploy.compose_file</code></td><td><code>/srv/ramify/docker-compose.yml</code></td><td>Compose file run with <code>IMAGE_TAG</code> + <code>COMPOSE_PROJECT_NAME</code> per environment</td></tr>
-            <tr><td><code>deploy.dns_target</code></td><td><code>203.0.113.10</code></td><td>Address DNS records point to — usually the deploy host itself</td></tr>
-            <tr><td><code>dns.zone</code> / <code>cloudflare_api_token</code></td><td><code>preview.example.com</code>, <code>$RAMIFY_CLOUDFLARE_API_TOKEN</code></td><td>Cloudflare zone and scoped API token</td></tr>
+            <tr><td><code>git.provider</code></td><td><code>github</code></td><td><code>github</code>, <code>gitlab</code>, or <code>bitbucket</code> &mdash; defaults to <code>github</code></td></tr>
+            <tr><td><code>git.token</code></td><td><code>$RAMIFY_GITHUB_TOKEN</code></td><td>Token used to post PR status comments</td></tr>
+            <tr><td><code>git.webhook_secret</code></td><td><code>$RAMIFY_GITHUB_WEBHOOK_SECRET</code></td><td>Secret configured on the repository webhook. GitHub and Bitbucket sign with it; GitLab sends it back verbatim</td></tr>
+            <tr><td><code>git.base_url</code></td><td><em>empty</em></td><td>Set for self-hosted GitLab; GitHub and Bitbucket Cloud use their public defaults</td></tr>
+            <tr><td><code>deploy.provider</code></td><td><code>compose</code></td><td><code>compose</code> or <code>kubernetes</code> &mdash; decides which deploy fields below apply</td></tr>
+            <tr><td><code>deploy.ssh_addr</code> / <code>ssh_user</code> / <code>ssh_private_key_path</code></td><td><code>host:22</code>, <code>ramify</code>, <code>/etc/ramify/deploy_key</code></td><td>How Ramify reaches the deploy host (Compose only)</td></tr>
+            <tr><td><code>deploy.compose_file</code></td><td><code>/srv/ramify/docker-compose.yml</code></td><td>Compose file run with <code>IMAGE_TAG</code> + <code>COMPOSE_PROJECT_NAME</code> per environment (Compose only)</td></tr>
+            <tr><td><code>deploy.kubernetes_namespace</code></td><td><code>ramify</code></td><td>Existing namespace preview workloads are applied into (Kubernetes only; Ramify does not create it)</td></tr>
+            <tr><td><code>deploy.dns_target</code></td><td><code>203.0.113.10</code></td><td>Address DNS records point to &mdash; usually the deploy host itself</td></tr>
+            <tr><td><code>dns.provider</code></td><td><code>cloudflare</code></td><td><code>cloudflare</code>, <code>route53</code>, <code>googlecloud</code>, or <code>digitalocean</code></td></tr>
+            <tr><td><code>dns.zone</code> / <code>cloudflare_api_token</code></td><td><code>preview.example.com</code>, <code>$RAMIFY_CLOUDFLARE_API_TOKEN</code></td><td>Zone, and the API token for Cloudflare or DigitalOcean. Route&nbsp;53 and Google Cloud take credentials from their ambient chains instead</td></tr>
             <tr><td><code>acme.email</code> / <code>ca_dir_url</code></td><td><code>ops@example.com</code>, Let's Encrypt directory URL</td><td>ACME account contact and directory — point at the staging directory while testing</td></tr>
             <tr><td><code>notify.comment_templates</code></td><td><code>{}</code></td><td>Optional Go <code>text/template</code> overrides per notification kind (ready/updated/failed/expiring/destroyed)</td></tr>
             <tr><td><code>log.format</code></td><td><code>json</code> / <code>text</code></td><td>Leave empty to auto-detect (text on a TTY); or set <code>RAMIFY_LOG_FORMAT</code></td></tr>
           </tbody>
         </table>
       </div>
-      <p class="muted">Full annotated example: <a href="https://github.com/khanalsaroj/ramify/blob/main/ramify.example.yaml" target="_blank" rel="noopener"><code>ramify.example.yaml</code></a>.</p>
+      <p class="muted">A legacy <code>github:</code> block is still read and copied into <code>git:</code> at load time, so installations predating multi-provider support keep working unchanged. Full annotated example: <a href="https://github.com/khanalsaroj/ramify/blob/main/ramify.example.yaml" target="_blank" rel="noopener"><code>ramify.example.yaml</code></a>.</p>
     </section>
 
     <section id="providers">
