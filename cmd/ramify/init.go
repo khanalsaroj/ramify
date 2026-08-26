@@ -114,7 +114,7 @@ func newInitCmd() *cobra.Command {
 	cmd.Flags().StringVar(&kubernetesIngressClass, "kubernetes-ingress-class", "", "Kubernetes Ingress class")
 	cmd.Flags().IntVar(&kubernetesContainerPort, "kubernetes-container-port", 8080, "container port for Kubernetes workloads")
 	cmd.Flags().IntVar(&kubernetesServicePort, "kubernetes-service-port", 8080, "Service port for Kubernetes workloads")
-	cmd.Flags().StringVar(&dnsZone, "dns-zone", "", "Cloudflare DNS zone (required)")
+	cmd.Flags().StringVar(&dnsZone, "dns-zone", "", "DNS zone preview records are created in (required)")
 	cmd.Flags().StringVar(&cloudflareAPIToken, "cloudflare-token", "", "Cloudflare API token")
 	cmd.Flags().StringVar(&dnsProvider, "dns-provider", "cloudflare", "DNS provider: cloudflare, route53, googlecloud, or digitalocean")
 	cmd.Flags().StringVar(&dnsAPIToken, "dns-token", "", "DNS API token (DigitalOcean; Cloudflare uses --cloudflare-token)")

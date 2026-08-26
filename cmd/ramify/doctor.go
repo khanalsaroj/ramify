@@ -3,10 +3,13 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
+	"strings"
 	"time"
 
 	cf "github.com/cloudflare/cloudflare-go"
@@ -38,8 +41,8 @@ func newDoctorCmd() *cobra.Command {
 
 			checks := []doctorCheck{
 				checkDNSProvider(cfg),
-				checkSSHReachable(cfg),
-				checkGitHubWebhookSecret(cfg),
+				checkDeployProvider(cmd.Context(), cfg),
+				checkWebhookSecret(cfg),
 				checkACMEDirectoryReachable(cfg),
 			}
 
@@ -94,6 +97,51 @@ func checkCloudflareToken(cfg *config.Config) doctorCheck {
 	return doctorCheck{name: name, ok: true, detail: "zone ID " + zoneID}
 }
 
+// checkDeployProvider runs the connectivity check that matches the configured
+// deploy provider. Dispatching matters: a kubernetes deployment has no SSH key to
+// read, so running the compose check unconditionally would fail every valid
+// kubernetes config.
+func checkDeployProvider(ctx context.Context, cfg *config.Config) doctorCheck {
+	switch cfg.Deploy.Provider {
+	case "", "compose":
+		return checkSSHReachable(cfg)
+	case "kubernetes":
+		return checkKubernetesReachable(ctx, cfg)
+	default:
+		return doctorCheck{name: "deploy provider configured", ok: false, detail: "unsupported provider " + cfg.Deploy.Provider}
+	}
+}
+
+// checkKubernetesReachable confirms kubectl is installed and that the configured
+// namespace is readable with the operator's current credentials. It reads rather
+// than writes, so running doctor never leaves anything behind on the cluster.
+func checkKubernetesReachable(ctx context.Context, cfg *config.Config) doctorCheck {
+	name := "Kubernetes namespace reachable"
+	namespace := cfg.Deploy.KubernetesNamespace
+	if namespace == "" {
+		namespace = "default"
+	}
+	args := []string{"get", "namespace", namespace}
+	if cfg.Deploy.KubernetesKubeconfig != "" {
+		args = append(args, "--kubeconfig", cfg.Deploy.KubernetesKubeconfig)
+	}
+	if cfg.Deploy.KubernetesContext != "" {
+		args = append(args, "--context", cfg.Deploy.KubernetesContext)
+	}
+	runCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	//nolint:gosec // args are built here from config values, never from webhook input
+	out, err := exec.CommandContext(runCtx, "kubectl", args...).CombinedOutput()
+	if err != nil {
+		detail := strings.TrimSpace(string(out))
+		if detail == "" {
+			detail = err.Error()
+		}
+		return doctorCheck{name: name, ok: false, detail: detail}
+	}
+	return doctorCheck{name: name, ok: true, detail: "namespace " + namespace + " is readable"}
+}
+
 // checkSSHReachable dials the deploy host and authenticates. It does not verify the
 // host key against ssh_known_hosts_path (that verification only matters for the
 // real deploy provider's traffic); a first-run doctor check on a host you just
@@ -128,9 +176,12 @@ func checkSSHReachable(cfg *config.Config) doctorCheck {
 	return doctorCheck{name: name, ok: true, detail: "connected and authenticated"}
 }
 
-func checkGitHubWebhookSecret(cfg *config.Config) doctorCheck {
-	name := "GitHub webhook secret configured"
-	if len(cfg.GitHub.WebhookSecret) < 16 {
+// checkWebhookSecret validates the secret every Git provider signs deliveries
+// with. It reads cfg.Git, which Load populates from the legacy github block when
+// only that is set, so it is correct for all three providers.
+func checkWebhookSecret(cfg *config.Config) doctorCheck {
+	name := "webhook secret configured"
+	if len(cfg.Git.WebhookSecret) < 16 {
 		return doctorCheck{name: name, ok: false, detail: "secret is set but shorter than 16 characters"}
 	}
 	return doctorCheck{name: name, ok: true, detail: "configured"}
