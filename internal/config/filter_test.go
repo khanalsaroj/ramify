@@ -5,6 +5,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -33,6 +34,7 @@ deploy:
   ssh_private_key_path: /etc/ramify/key
   compose_file: /srv/compose.yml
   dns_target: 203.0.113.10
+  certificate_dir: /srv/ramify/certificates
 dns:
   provider: cloudflare
   zone: preview.example.com
@@ -69,6 +71,24 @@ filter:
 	require.Equal(t, []string{"dependabot/**"}, cfg.Filter.DenyBranches)
 	require.Equal(t, []string{"preview"}, cfg.Filter.RequiredLabels)
 	require.Equal(t, 25, cfg.Filter.MaxConcurrentEnvs)
+}
+
+// certificate_dir is the only route TLS material has to a Compose host, so an
+// omission must surface at startup rather than as five failed applies later.
+func TestComposeRequiresCertificateDir(t *testing.T) {
+	body := strings.Replace(baseConfig, "  certificate_dir: /srv/ramify/certificates\n", "", 1)
+	_, err := Load(writeConfig(t, body))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "deploy.certificate_dir")
+}
+
+// Kubernetes installs certificates as Secrets, so it must not inherit the
+// requirement.
+func TestKubernetesDoesNotRequireCertificateDir(t *testing.T) {
+	body := strings.Replace(baseConfig, "  certificate_dir: /srv/ramify/certificates\n", "", 1)
+	body = strings.Replace(body, "provider: compose", "provider: kubernetes\n  kubernetes_namespace: ramify", 1)
+	_, err := Load(writeConfig(t, body))
+	require.NoError(t, err)
 }
 
 // A negative ceiling is a typo, not a request for unlimited. Silently treating

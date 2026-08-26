@@ -235,11 +235,16 @@ without all of these: `base_domain`, `server.socket_path`, `store.path`,
 
 | Condition                                    | Additionally required                                                   |
 |----------------------------------------------|-------------------------------------------------------------------------|
-| `deploy.provider: compose`                   | `deploy.ssh_addr`, `deploy.compose_file`, `deploy.ssh_private_key_path`  |
+| `deploy.provider: compose`                   | `deploy.ssh_addr`, `deploy.compose_file`, `deploy.ssh_private_key_path`, `deploy.certificate_dir` |
 | `deploy.provider: kubernetes`                | `deploy.kubernetes_namespace`                                           |
 | `dns.provider: cloudflare` or `digitalocean` | `dns.api_token` (Cloudflare also accepts `dns.cloudflare_api_token`)     |
 | `dns.provider: googlecloud`                  | `dns.project`, `dns.zone_id`                                            |
 | `server.tcp_addr` set                        | `server.tcp_token`                                                      |
+
+`deploy.certificate_dir` is required for Compose rather than optional: SSH is
+the only route TLS material has to that host, so without it every apply obtains
+a certificate and then fails installing it, five retries deep. Kubernetes does
+not use it — it installs certificates as Secrets.
 
 Route 53 and Google Cloud DNS need no token in the file: they use the AWS SDK
 credential chain and Application Default Credentials respectively. For Route 53

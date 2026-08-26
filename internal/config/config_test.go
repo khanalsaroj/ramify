@@ -24,6 +24,7 @@ deploy:
   ssh_private_key_path: /etc/ramify/deploy_key
   compose_file: /srv/ramify/docker-compose.yml
   dns_target: 203.0.113.10
+  certificate_dir: /srv/ramify/certificates
 dns:
   zone: preview.example.com
   cloudflare_api_token: cloudflare-token

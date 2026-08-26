@@ -116,7 +116,7 @@ func newInitCmd() *cobra.Command {
 	cmd.Flags().StringVar(&deploySSHKnownHosts, "deploy-ssh-known-hosts", "", "path to a known_hosts file verifying the deploy host's key")
 	cmd.Flags().StringVar(&deployComposeFile, "deploy-compose-file", "", "path to docker-compose.yml on the deploy host (required)")
 	cmd.Flags().StringVar(&deployDNSTarget, "deploy-dns-target", "", "address DNS records should point to")
-	cmd.Flags().StringVar(&deployCertificateDir, "deploy-certificate-dir", "", "remote directory for installed TLS certificate material")
+	cmd.Flags().StringVar(&deployCertificateDir, "deploy-certificate-dir", "/srv/ramify/certificates", "remote directory TLS material is installed into, read by your reverse proxy (required for compose)")
 	cmd.Flags().StringVar(&kubernetesNamespace, "kubernetes-namespace", "ramify", "Kubernetes namespace for preview workloads")
 	cmd.Flags().StringVar(&kubernetesContext, "kubernetes-context", "", "Kubernetes context to use")
 	cmd.Flags().StringVar(&kubernetesKubeconfig, "kubernetes-kubeconfig", "", "path to Kubernetes kubeconfig")

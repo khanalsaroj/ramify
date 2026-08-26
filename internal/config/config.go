@@ -74,9 +74,13 @@ type DeployConfig struct {
 	// OpenSSH-format known_hosts file. Left empty, the host key is not verified —
 	// acceptable only for a first connection to a host you've provisioned
 	// yourself; ramify doctor warns if this is unset.
-	SSHKnownHostsPath       string `yaml:"ssh_known_hosts_path,omitempty"`
-	ComposeFile             string `yaml:"compose_file"`
-	DNSTarget               string `yaml:"dns_target"`
+	SSHKnownHostsPath string `yaml:"ssh_known_hosts_path,omitempty"`
+	ComposeFile       string `yaml:"compose_file"`
+	DNSTarget         string `yaml:"dns_target"`
+	// CertificateDir is the remote directory TLS material is installed into, read
+	// by the operator's reverse proxy. Required for the compose provider: it is
+	// the only path a certificate has to that host. Unused by kubernetes, which
+	// installs certificates as Secrets instead.
 	CertificateDir          string `yaml:"certificate_dir,omitempty"`
 	KubernetesNamespace     string `yaml:"kubernetes_namespace,omitempty"`
 	KubernetesContext       string `yaml:"kubernetes_context,omitempty"`
@@ -269,6 +273,14 @@ func (c Config) Validate() error {
 		}
 		if c.Deploy.SSHPrivateKeyPath == "" {
 			missing = append(missing, "deploy.ssh_private_key_path")
+		}
+		// Required, not optional. SSH is the only route TLS material has to a
+		// Compose deploy host, so without this the certificate Ramify just
+		// obtained has nowhere to go and InstallCertificate fails every apply
+		// after five retries. Failing at startup names the cause; failing per
+		// apply does not.
+		if c.Deploy.CertificateDir == "" {
+			missing = append(missing, "deploy.certificate_dir")
 		}
 	}
 	if deployProvider != "compose" && deployProvider != "kubernetes" {

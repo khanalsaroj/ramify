@@ -55,7 +55,10 @@ deploy:
   # reverse proxy on that host is expected to route by Host header to the right
   # compose service.
   dns_target: 203.0.113.10
-  # Optional remote directory mounted/read by the reverse proxy for TLS files.
+  # Remote directory TLS material is installed into, mounted/read by your
+  # reverse proxy. Required when provider is compose: SSH is the only route a
+  # certificate has to that host. Unused by kubernetes, which installs
+  # certificates as Secrets instead.
   certificate_dir: /srv/ramify/certificates
   # Kubernetes options (used when provider is kubernetes).
   kubernetes_namespace: ramify
