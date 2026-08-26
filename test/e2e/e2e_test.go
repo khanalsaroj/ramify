@@ -327,6 +327,29 @@ func TestFullLifecycle(t *testing.T) {
 	})
 
 	requireCommentContains(t, e.githubBaseURL, "destroyed")
+
+	// The ready notification and the destroyed one must land on a single comment.
+	// UpsertPreviewComment exists to avoid pull request spam, and until the mock
+	// answered list and edit that contract had no end-to-end coverage.
+	require.Equal(t, 1, countComments(t, e.githubBaseURL),
+		"lifecycle notifications must upsert one comment, not append several")
+}
+
+// countComments reports how many comments the mock GitHub server holds.
+func countComments(t *testing.T, githubBaseURL string) int {
+	t.Helper()
+	client := &http.Client{Timeout: 10 * time.Second}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, githubBaseURL+"_test/comments", nil)
+	require.NoError(t, err)
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	var got []struct {
+		Body string `json:"body"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+	return len(got)
 }
 
 func requireCommentContains(t *testing.T, githubBaseURL, substring string) {
