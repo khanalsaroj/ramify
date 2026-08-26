@@ -61,9 +61,22 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodPatch && editPath.MatchString(r.URL.Path):
 		handleEditComment(w, r, editPath.FindStringSubmatch(r.URL.Path))
 	default:
-		log.Printf("mockgithub: unhandled %s %s", r.Method, r.URL.Path)
+		//nolint:gosec // G706: both values pass through sanitize, which strconv.Quote-escapes control characters; the taint analysis does not model the sanitizer
+		log.Printf("mockgithub: unhandled %s %s", sanitize(r.Method), sanitize(r.URL.Path))
 		w.WriteHeader(http.StatusNotFound)
 	}
+}
+
+// sanitize renders a request-supplied value safe to log. Both the method and the
+// path come from the caller, and a newline in either would let one request forge
+// extra log lines. strconv.Quote escapes control characters, and the length cap
+// keeps a long path from flooding the output.
+func sanitize(v string) string {
+	const maxLogged = 128
+	if len(v) > maxLogged {
+		v = v[:maxLogged] + "..."
+	}
+	return strconv.Quote(v)
 }
 
 func handleCreateComment(w http.ResponseWriter, r *http.Request, m []string) {
