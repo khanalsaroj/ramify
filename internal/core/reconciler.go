@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/khanalsaroj/ramify/internal/core/domain"
+	"github.com/khanalsaroj/ramify/internal/core/policy"
 	"github.com/khanalsaroj/ramify/internal/store"
 	"github.com/khanalsaroj/ramify/providers/providerapi"
 )
@@ -49,6 +50,18 @@ type Reconciler struct {
 	// assignment (an environment is then only removed by an explicit Destroy).
 	defaultTTL time.Duration
 
+	// policy decides which webhook events may produce an environment. Its zero
+	// value allows everything, so an operator who configures nothing keeps the
+	// original behavior.
+	policy policy.Policy
+	// maxConcurrent caps the number of live environments. Zero means no ceiling.
+	maxConcurrent int
+	// admissionMu serializes the count-then-reserve step of admission. The
+	// per-branch locks below cannot do this job: two pushes to *different*
+	// branches take different locks, so without this both could observe
+	// maxConcurrent-1 live environments and both create one.
+	admissionMu sync.Mutex
+
 	logger *slog.Logger
 	locks  sync.Map // project/branch -> *sync.Mutex
 
@@ -69,11 +82,12 @@ func NewReconciler(
 	baseDomain string,
 	defaultTTL time.Duration,
 	logger *slog.Logger,
+	opts ...Option,
 ) *Reconciler {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Reconciler{
+	r := &Reconciler{
 		store:      st,
 		deploy:     deploy,
 		dns:        dns,
@@ -84,6 +98,24 @@ func NewReconciler(
 		defaultTTL: defaultTTL,
 		logger:     logger,
 		jitter:     fullJitter,
+	}
+	for _, opt := range opts {
+		opt(r)
+	}
+	return r
+}
+
+// Option configures optional Reconciler behavior. Options exist so admission
+// rules could be added without changing the signature every existing caller and
+// test already passes.
+type Option func(*Reconciler)
+
+// WithAdmission sets the event-admission policy and the ceiling on live
+// environments. A maxConcurrent of zero or less means no ceiling.
+func WithAdmission(p policy.Policy, maxConcurrent int) Option {
+	return func(r *Reconciler) {
+		r.policy = p
+		r.maxConcurrent = maxConcurrent
 	}
 }
 
@@ -148,6 +180,48 @@ func (r *Reconciler) applyWithoutEvent(ctx context.Context, req ApplyRequest) er
 	return err
 }
 
+// admit evaluates the policy and the concurrency ceiling for an inbound webhook
+// event, returning a human-readable reason when the event must be skipped. An
+// empty reason means the event may proceed.
+//
+// Only creation is capped. An event for an environment that already exists is
+// always admitted, because updating it consumes no new slot and because dropping
+// updates at the ceiling would freeze live environments on a stale commit.
+func (r *Reconciler) admit(ctx context.Context, ev providerapi.Event, req ApplyRequest) (string, error) {
+	if decision := r.policy.Decide(ev); !decision.Allowed {
+		return decision.Reason, nil
+	}
+	if r.maxConcurrent <= 0 {
+		return "", nil
+	}
+
+	r.admissionMu.Lock()
+	defer r.admissionMu.Unlock()
+
+	_, err := r.store.GetEnvironmentByProjectBranch(ctx, req.Project, req.Branch)
+	switch {
+	case err == nil:
+		return "", nil
+	case !errors.Is(err, store.ErrNotFound):
+		return "", fmt.Errorf("reconciler: admission lookup %s/%s: %w", req.Project, req.Branch, err)
+	}
+
+	live, err := r.store.CountLiveEnvironments(ctx)
+	if err != nil {
+		return "", fmt.Errorf("reconciler: counting live environments: %w", err)
+	}
+	if live >= r.maxConcurrent {
+		return fmt.Sprintf("skipped: max_concurrent_envs reached (%d of %d live); destroy an environment or let one expire to free a slot", live, r.maxConcurrent), nil
+	}
+
+	// Reserve the slot before releasing admissionMu. Counting and then letting
+	// doApply create the row later would reopen the race this mutex closes.
+	if _, err := r.upsertPendingEnvironment(ctx, req); err != nil {
+		return "", fmt.Errorf("reconciler: reserving slot for %s/%s: %w", req.Project, req.Branch, err)
+	}
+	return "", nil
+}
+
 func (r *Reconciler) lock(project, branch string) func() {
 	key := project + "\x00" + branch
 	value, _ := r.locks.LoadOrStore(key, &sync.Mutex{})
@@ -165,6 +239,19 @@ func (r *Reconciler) ProcessWebhookEvent(ctx context.Context, ev providerapi.Eve
 		req := ApplyRequestFromEvent(ev, subdomain)
 		unlock := r.lock(req.Project, req.Branch)
 		defer unlock()
+		reason, err := r.admit(ctx, ev, req)
+		if err != nil {
+			return err
+		}
+		if reason != "" {
+			// Skips are logged, not commented on the pull request. A denied
+			// branch pattern is matched on every push to that branch, and
+			// commenting each time would bury the request in noise for what is
+			// a standing operator decision rather than an error.
+			r.logger.InfoContext(ctx, "reconciler: event skipped by admission policy",
+				"project", ev.Project, "branch", ev.Branch, "pr", ev.PRNumber, "reason", reason)
+			return nil
+		}
 		return r.applyWithoutEvent(ctx, req)
 	case "pr_closed", "branch_deleted":
 		env, err := r.store.GetEnvironmentByProjectBranch(ctx, ev.Project, ev.Branch)
