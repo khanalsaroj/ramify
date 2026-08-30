@@ -5,6 +5,7 @@
 package api
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -29,7 +30,8 @@ func acquireProcessLock(path string) (func() error, error) {
 		return nil, fmt.Errorf("acquiring process lock %s: another ramifyd instance is already running: %w", path, err)
 	}
 	return func() error {
-		defer f.Close()
-		return unix.Flock(int(f.Fd()), unix.LOCK_UN)
+		unlockErr := unix.Flock(int(f.Fd()), unix.LOCK_UN)
+		closeErr := f.Close()
+		return errors.Join(unlockErr, closeErr)
 	}, nil
 }
