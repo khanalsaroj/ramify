@@ -3,10 +3,14 @@
 ## Health and readiness
 
 `/healthz` verifies that the daemon can read the state store. `/readyz` verifies
-that the event store is available for reconciliation. `/metrics` exposes counters
+that the event store is available for reconciliation, that the durable event
+worker's poll loop has completed an iteration within the last 30s (catching a
+hung or panicked worker that would otherwise look alive), and that the pending
+inbox backlog is under a threshold — so orchestration stops routing traffic to a
+daemon that is running but not actually reconciling. `/metrics` exposes counters
 in Prometheus text format, including webhook deliveries, duplicates, retries,
-reconciliation failures, cleanup failures, pending inbox work, and dead-lettered
-events.
+reconciliation failures, cleanup failures, pending inbox work, dead-lettered
+events, and the worker's last heartbeat time.
 
 Keep these endpoints behind the same local socket or authenticated/TLS-protected
 TCP listener as the control API.
@@ -151,7 +155,12 @@ journalctl -u ramifyd | grep "skipped by admission policy"
 - Configure `deploy.ssh_known_hosts_path`. This is enforced, not just
   recommended: `ramifyd` refuses to start a Compose deployment without it
   unless you explicitly set `deploy.ssh_insecure_skip_host_key_verify: true`.
-- Keep the Unix socket at mode `0660` with a dedicated group.
+- Keep the Unix socket at mode `0660` with a dedicated group. On startup,
+  `ramifyd` refuses to remove and rebind a socket path that another process is
+  actively serving, and (on Linux/macOS) holds an advisory lock on a sibling
+  `<socket_path>.lock` file for its lifetime, so a second daemon accidentally
+  started against the same `server.socket_path` cannot disconnect or hijack
+  the running one.
 - Require `server.tcp_token` whenever `server.tcp_addr` is configured.
 - Put remote TCP access behind TLS: set `server.tcp_tls_cert_file` and
   `server.tcp_tls_key_file` (or mTLS via your own reverse proxy). This is also

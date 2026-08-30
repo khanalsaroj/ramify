@@ -35,6 +35,18 @@ type DeployProvider struct {
 
 	// ApplyErr, when set, is returned by every Apply call instead of succeeding.
 	ApplyErr error
+	// ApplyErrOnRef, when set, is returned only by an Apply call whose
+	// ArtifactRef matches a key in the map, letting a test make one specific
+	// revision fail while another (e.g. a rollback target) keeps succeeding.
+	ApplyErrOnRef map[string]error
+	// SleepErr and WakeErr, when set, are returned by every Sleep/Wake call
+	// instead of succeeding.
+	SleepErr error
+	WakeErr  error
+	// DestroyErr, when set, is returned by every Destroy call instead of
+	// succeeding, so tests can exercise compensating-cleanup ordering when one
+	// teardown step fails.
+	DestroyErr error
 	// applyCalls counts every Apply invocation, including ones that fail, so
 	// tests can assert retry/backoff behavior.
 	applyCalls int
@@ -74,9 +86,13 @@ func (f *DeployProvider) Apply(_ context.Context, spec providerapi.EnvSpec) (pro
 	f.mu.Lock()
 	f.applyCalls++
 	gate := f.ApplyGate
+	refErr := f.ApplyErrOnRef[spec.ArtifactRef]
 	f.mu.Unlock()
 	if f.ApplyErr != nil {
 		return providerapi.Deployment{}, f.ApplyErr
+	}
+	if refErr != nil {
+		return providerapi.Deployment{}, refErr
 	}
 	if gate != nil {
 		n := atomic.AddInt32(&f.inFlight, 1)
@@ -114,6 +130,9 @@ func (f *DeployProvider) Apply(_ context.Context, spec providerapi.EnvSpec) (pro
 func (f *DeployProvider) Sleep(_ context.Context, ref string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.SleepErr != nil {
+		return f.SleepErr
+	}
 	d, ok := f.deployments[ref]
 	if !ok {
 		return fmt.Errorf("fakes: unknown deployment ref %q", ref)
@@ -126,6 +145,9 @@ func (f *DeployProvider) Sleep(_ context.Context, ref string) error {
 func (f *DeployProvider) Wake(_ context.Context, ref string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.WakeErr != nil {
+		return f.WakeErr
+	}
 	d, ok := f.deployments[ref]
 	if !ok {
 		return fmt.Errorf("fakes: unknown deployment ref %q", ref)
@@ -139,6 +161,9 @@ func (f *DeployProvider) Wake(_ context.Context, ref string) error {
 func (f *DeployProvider) Destroy(_ context.Context, ref string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.DestroyErr != nil {
+		return f.DestroyErr
+	}
 	d, ok := f.deployments[ref]
 	if !ok {
 		return nil

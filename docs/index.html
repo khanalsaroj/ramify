@@ -762,7 +762,7 @@ docker compose -f test/e2e/docker-compose.dev.yml down --volumes</code></pre>
           <thead><tr><th>Endpoint</th><th>Checks</th></tr></thead>
           <tbody>
             <tr><td><code>GET /healthz</code></td><td>The daemon can read the state store</td></tr>
-            <tr><td><code>GET /readyz</code></td><td>The event store is available for reconciliation</td></tr>
+            <tr><td><code>GET /readyz</code></td><td>The event store is available, the worker is heartbeating, and the backlog is under threshold</td></tr>
             <tr><td><code>GET /metrics</code></td><td>Counters and gauges in Prometheus text format</td></tr>
           </tbody>
         </table>

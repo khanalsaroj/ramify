@@ -8,6 +8,14 @@ import (
 	"github.com/khanalsaroj/ramify/providers/providerapi"
 )
 
+// ErrInvalidEnvironmentAction is returned by Sleep/Wake when the environment's
+// current status makes the requested action impossible — most importantly, it is
+// what stops a stale DeployRef on a failed or destroyed environment from ever
+// reaching a provider call: Wake requires StatusSleeping and Sleep requires
+// StatusReady, so an environment in any other status is rejected before doSleep/
+// doWake touches the deploy provider.
+var ErrInvalidEnvironmentAction = errors.New("core: action not valid for environment's current status")
+
 // terminalError marks a failure that retrying cannot fix. Retrying a permanent
 // failure — a malformed payload, a DNS name owned by someone else — burns the
 // attempt budget and delays every other event behind it, so the reconciler

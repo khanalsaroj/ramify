@@ -108,6 +108,48 @@ func TestServeUnixSocket(t *testing.T) {
 	require.NoError(t, <-done)
 }
 
+// A live socket must never be silently removed and rebound out from under the
+// process actually serving it — that would disconnect/hijack a running
+// daemon's local API endpoint. net.DialTimeout("unix", ...) works the same way
+// on Windows as it does on Unix, so this is real, non-simulated coverage on any
+// platform, not just the production target.
+func TestListenUnixRefusesToHijackLiveSocket(t *testing.T) {
+	socketPath := shortSocketPath(t)
+
+	first, err := listenUnix(socketPath)
+	require.NoError(t, err)
+	defer func() { _ = first.Close() }()
+
+	_, err = listenUnix(socketPath)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "another ramifyd instance appears to be running")
+
+	// The original listener must be completely unaffected by the refused
+	// second attempt.
+	conn, dialErr := net.DialTimeout("unix", socketPath, time.Second)
+	require.NoError(t, dialErr)
+	_ = conn.Close()
+}
+
+// A socket file left behind by an unclean shutdown (nothing listening on it
+// anymore) must still be reclaimed, or the daemon could never restart after a
+// crash.
+func TestListenUnixReclaimsStaleSocketFile(t *testing.T) {
+	socketPath := shortSocketPath(t)
+
+	first, err := listenUnix(socketPath)
+	require.NoError(t, err)
+	// A graceful Close() would unlink the socket file itself, which is not
+	// what an unclean shutdown (e.g. a killed process) leaves behind: disable
+	// that so the file stays on disk with nothing listening on it anymore.
+	first.(*net.UnixListener).SetUnlinkOnClose(false)
+	require.NoError(t, first.Close())
+
+	second, err := listenUnix(socketPath)
+	require.NoError(t, err)
+	defer func() { _ = second.Close() }()
+}
+
 func TestDashboardAssetsAreServed(t *testing.T) {
 	h := newTestHarness(t)
 

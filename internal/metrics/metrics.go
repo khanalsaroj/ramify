@@ -26,6 +26,12 @@ type Metrics struct {
 	// means work was dropped and needs an operator, so it is the counter worth
 	// alerting on.
 	DeadLettered atomic.Int64
+	// WorkerHeartbeat is the UnixNano timestamp the durable event worker last
+	// completed a poll iteration, success or failure. /readyz uses its staleness
+	// to detect a hung or panicked worker goroutine that is otherwise
+	// indistinguishable from a healthy one: the process is alive, but nothing is
+	// reconciling.
+	WorkerHeartbeat atomic.Int64
 }
 
 // WritePrometheus writes the current counters in Prometheus exposition format.
@@ -56,6 +62,7 @@ func (m *Metrics) WritePrometheus(w io.Writer) error {
 	}{
 		{"ramify_inbox_pending", "Durable webhook inbox events pending processing", m.InboxPending.Load()},
 		{"ramify_events_dead_lettered", "Events retired without succeeding; requires operator attention", m.DeadLettered.Load()},
+		{"ramify_worker_heartbeat_unixtime", "Unix timestamp (seconds) the durable event worker last completed a poll iteration", m.WorkerHeartbeat.Load() / int64(1e9)},
 	}
 	for _, gauge := range gauges {
 		if _, err := fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s gauge\n%s %d\n", gauge.name, gauge.help, gauge.name, gauge.name, gauge.value); err != nil {

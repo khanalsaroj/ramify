@@ -136,6 +136,62 @@ func TestApplyRetriesThenFails(t *testing.T) {
 	require.Equal(t, "failed", h.notify.Notifications[0].Event.Kind)
 }
 
+// A failed redeploy of an environment that previously deployed successfully
+// must roll back to the last known-good revision rather than being abandoned:
+// the environment ends up degraded (still serving ref1) instead of failed.
+func TestApplyRollsBackToLastKnownGoodOnFailedUpdate(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	env, err := h.rec.Apply(ctx, ApplyRequest{Project: "acme/web", Branch: "feature-x", Subdomain: "feature-x", ArtifactRef: "ref1"})
+	require.NoError(t, err)
+	require.Equal(t, store.StatusReady, env.Status)
+	goodDeployRef := env.DeployRef
+
+	h.deploy.ApplyErrOnRef = map[string]error{"ref2": errors.New("bad artifact")}
+	updated, err := h.rec.Apply(ctx, ApplyRequest{Project: "acme/web", Branch: "feature-x", Subdomain: "feature-x", ArtifactRef: "ref2"})
+	require.Error(t, err)
+	require.Equal(t, store.StatusDegraded, updated.Status)
+	require.Equal(t, "ref2", updated.ArtifactRef, "desired stays the revision that was actually requested")
+	require.Equal(t, "ref1", updated.LastGoodArtifactRef)
+	require.Equal(t, goodDeployRef, updated.LastGoodDeployRef)
+
+	final, err := h.store.GetEnvironment(ctx, env.ID)
+	require.NoError(t, err)
+	require.Equal(t, store.StatusDegraded, final.Status)
+
+	status, err := h.deploy.HealthCheck(ctx, final.LastGoodDeployRef)
+	require.NoError(t, err)
+	require.True(t, status.Healthy, "the last known-good deployment must still be healthy/serving")
+
+	var degradedNotifications int
+	for _, n := range h.notify.Notifications {
+		if n.Event.Kind == "degraded" {
+			degradedNotifications++
+		}
+	}
+	require.Equal(t, 1, degradedNotifications)
+}
+
+// If the rollback attempt itself also fails, the environment must still end up
+// StatusFailed, matching pre-rollback behavior — rollback is a best-effort
+// compensating action, not a guarantee.
+func TestApplyMarksFailedWhenRollbackAlsoFails(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	env, err := h.rec.Apply(ctx, ApplyRequest{Project: "acme/web", Branch: "feature-x", Subdomain: "feature-x", ArtifactRef: "ref1"})
+	require.NoError(t, err)
+
+	h.deploy.ApplyErr = errors.New("provider is completely down")
+	_, err = h.rec.Apply(ctx, ApplyRequest{Project: "acme/web", Branch: "feature-x", Subdomain: "feature-x", ArtifactRef: "ref2"})
+	require.Error(t, err)
+
+	final, err := h.store.GetEnvironment(ctx, env.ID)
+	require.NoError(t, err)
+	require.Equal(t, store.StatusFailed, final.Status)
+}
+
 func TestDestroyTearsDownInOrder(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -172,6 +228,40 @@ func TestDestroyIsIdempotent(t *testing.T) {
 	require.NoError(t, err)
 
 	require.NoError(t, h.rec.Destroy(ctx, final))
+}
+
+func TestDestroyAttemptsEveryStepWhenCertRevokeFails(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	env, err := h.rec.Apply(ctx, ApplyRequest{Project: "acme/web", Branch: "feature-x", Subdomain: "feature-x", ArtifactRef: "ref1"})
+	require.NoError(t, err)
+
+	h.cert.RevokeErr = errors.New("acme unavailable")
+	err = h.rec.Destroy(ctx, env)
+	require.Error(t, err)
+
+	records, err := h.store.ListDNSRecords(ctx, env.ID)
+	require.NoError(t, err)
+	require.Empty(t, records, "DNS cleanup must still run despite the cert failure")
+
+	status, err := h.deploy.HealthCheck(ctx, env.DeployRef)
+	require.NoError(t, err)
+	require.Equal(t, "destroyed", status.Detail, "deploy teardown must still run despite the cert failure")
+
+	mid, err := h.store.GetEnvironment(ctx, env.ID)
+	require.NoError(t, err)
+	require.Equal(t, store.StatusDestroying, mid.Status, "not marked destroyed while a step is still failing")
+
+	// Clear the fault and retry: the store-tracked/idempotent steps are not
+	// redone, only the previously-unfinished one (cert revoke) needs to
+	// succeed for the environment to finish tearing down.
+	h.cert.RevokeErr = nil
+	require.NoError(t, h.rec.Destroy(ctx, mid))
+
+	final, err := h.store.GetEnvironment(ctx, env.ID)
+	require.NoError(t, err)
+	require.Equal(t, store.StatusDestroyed, final.Status)
 }
 
 func TestReplayUnprocessedEventsRecoversCrashedApply(t *testing.T) {
@@ -227,6 +317,97 @@ func TestReplayUnprocessedEventsRecoversCrashedDestroy(t *testing.T) {
 	final, err := h.store.GetEnvironment(ctx, env.ID)
 	require.NoError(t, err)
 	require.Equal(t, store.StatusDestroyed, final.Status)
+}
+
+func TestSleepThenWakeRoundTrips(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	env, err := h.rec.Apply(ctx, ApplyRequest{Project: "acme/web", Branch: "feature-x", Subdomain: "feature-x", ArtifactRef: "ref1"})
+	require.NoError(t, err)
+
+	slept, err := h.rec.Sleep(ctx, env)
+	require.NoError(t, err)
+	require.Equal(t, store.StatusSleeping, slept.Status)
+
+	woken, err := h.rec.Wake(ctx, slept)
+	require.NoError(t, err)
+	require.Equal(t, store.StatusReady, woken.Status)
+}
+
+// A stale DeployRef on a failed or destroyed environment must never reach the
+// deploy provider: Wake requires StatusSleeping, so it is rejected purely on
+// status, before any provider call.
+func TestWakeRejectedForNonSleepingEnvironment(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	env, err := h.rec.Apply(ctx, ApplyRequest{Project: "acme/web", Branch: "feature-x", Subdomain: "feature-x", ArtifactRef: "ref1"})
+	require.NoError(t, err)
+	require.Equal(t, store.StatusReady, env.Status)
+
+	_, err = h.rec.Wake(ctx, env)
+	require.ErrorIs(t, err, ErrInvalidEnvironmentAction)
+}
+
+func TestSleepRejectedForNonReadyEnvironment(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	env, err := h.store.CreateEnvironment(ctx, store.Environment{
+		Project: "acme/web", Branch: "feature-x", Subdomain: "feature-x", ArtifactRef: "ref1", Status: store.StatusPending,
+	})
+	require.NoError(t, err)
+
+	_, err = h.rec.Sleep(ctx, env)
+	require.ErrorIs(t, err, ErrInvalidEnvironmentAction)
+}
+
+func TestReplayUnprocessedEventsRecoversCrashedSleep(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	env, err := h.rec.Apply(ctx, ApplyRequest{Project: "acme/web", Branch: "feature-x", Subdomain: "feature-x", ArtifactRef: "ref1"})
+	require.NoError(t, err)
+
+	payload, err := marshalSleepPayload(env.Project, env.Branch)
+	require.NoError(t, err)
+	_, err = h.store.CreateEvent(ctx, store.Event{EnvironmentID: env.ID, Kind: EventKindSleepRequested, Payload: payload})
+	require.NoError(t, err)
+
+	require.NoError(t, h.rec.ReplayUnprocessedEvents(ctx))
+
+	final, err := h.store.GetEnvironment(ctx, env.ID)
+	require.NoError(t, err)
+	require.Equal(t, store.StatusSleeping, final.Status)
+}
+
+func TestSleepRetriesOnProviderError(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	env, err := h.rec.Apply(ctx, ApplyRequest{Project: "acme/web", Branch: "feature-x", Subdomain: "feature-x", ArtifactRef: "ref1"})
+	require.NoError(t, err)
+
+	h.deploy.SleepErr = errors.New("provider timeout")
+	_, err = h.rec.Sleep(ctx, env)
+	require.Error(t, err)
+
+	mid, err := h.store.GetEnvironment(ctx, env.ID)
+	require.NoError(t, err)
+	require.Equal(t, store.StatusReady, mid.Status, "must not flip to sleeping until the provider call actually succeeds")
+
+	h.clock.now = h.clock.now.Add(time.Hour)
+	due, err := h.store.ListDueEvents(ctx, h.clock.now, 10)
+	require.NoError(t, err)
+	require.Len(t, due, 1, "the sleep event must remain pending for retry")
+
+	h.deploy.SleepErr = nil
+	require.NoError(t, h.rec.ReplayEvents(ctx, due))
+
+	final, err := h.store.GetEnvironment(ctx, env.ID)
+	require.NoError(t, err)
+	require.Equal(t, store.StatusSleeping, final.Status)
 }
 
 func TestReplayFailureRemainsPendingAndSchedulesRetry(t *testing.T) {

@@ -3,7 +3,6 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -38,9 +37,32 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+// readyMaxHeartbeatAge and readyMaxInboxBacklog bound handleReadyz's worker-health
+// checks: a generous tolerance around the durable event worker's 2s poll interval
+// (cmd/ramifyd's runEventLoop) so a slow tick doesn't flap readiness, but tight
+// enough to catch a hung or panicked worker goroutine; and a backlog size high
+// enough that a normal burst of replay work doesn't trip it, low enough that a
+// daemon that has genuinely stopped keeping up gets taken out of rotation. A
+// single point-in-time backlog check is enough here: orchestrators already poll
+// readiness repeatedly with their own failureThreshold, which is what turns one
+// bad sample into a sustained-backlog signal.
+const (
+	readyMaxHeartbeatAge = 30 * time.Second
+	readyMaxInboxBacklog = 1000
+)
+
 func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 	if _, err := s.store.ListUnprocessedEvents(r.Context()); err != nil {
 		s.writeError(w, http.StatusServiceUnavailable, "event store unavailable")
+		return
+	}
+	heartbeat := s.metrics.WorkerHeartbeat.Load()
+	if heartbeat == 0 || time.Since(time.Unix(0, heartbeat)) > readyMaxHeartbeatAge {
+		s.writeError(w, http.StatusServiceUnavailable, "event worker heartbeat stale")
+		return
+	}
+	if pending := s.metrics.InboxPending.Load(); pending > readyMaxInboxBacklog {
+		s.writeError(w, http.StatusServiceUnavailable, "event backlog exceeds threshold")
 		return
 	}
 	w.WriteHeader(http.StatusOK)
@@ -53,11 +75,14 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	}
 }
 
-// handleWebhook verifies and parses the inbound GitHub webhook, then triggers
-// reconciliation asynchronously: Apply/Destroy already persist a request event to
-// the store before making any provider call, so if the process dies mid-request the
-// next startup's ReplayUnprocessedEvents recovers it. Responding before that work
-// completes keeps webhook delivery well under GitHub's timeout.
+// handleWebhook verifies and parses the inbound GitHub webhook, durably persists
+// it, then hands it to Server's bounded webhook worker pool (see webhookQueue)
+// for low-latency dispatch. The durable persist happens before any provider
+// call and before the handler returns, so if the process dies mid-request or the
+// pool's queue is momentarily full, cmd/ramifyd's poll-based durable event worker
+// still picks the event up on its own — the pool is a latency optimization, not
+// the source of durability. Responding before reconciliation completes keeps
+// webhook delivery well under GitHub's timeout.
 func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	s.metrics.WebhookReceived.Add(1)
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxWebhookBody))
@@ -113,7 +138,13 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	go s.processEvent(inbox.ID, ev) //nolint:gosec // durable inbox is persisted before this worker starts
+	// Non-blocking: the event is already durable, so a full queue just falls
+	// back to the poll-based worker instead of blocking this request or
+	// spawning an unbounded goroutine.
+	select {
+	case s.webhookQueue <- inbox:
+	default:
+	}
 	w.WriteHeader(http.StatusAccepted)
 }
 
@@ -139,30 +170,6 @@ func (s *Server) webhookHeaders() (signature, delivery string) {
 		return namer.SignatureHeader(), namer.DeliveryHeader()
 	}
 	return "X-Hub-Signature-256", "X-GitHub-Delivery"
-}
-
-func (s *Server) processEvent(eventID string, ev providerapi.Event) {
-	ctx, cancel := context.WithTimeout(context.Background(), webhookProcessTimeout)
-	defer cancel()
-	claimed, err := s.store.ClaimEvent(ctx, eventID, time.Now().UTC(), time.Now().UTC().Add(webhookProcessTimeout))
-	if err != nil || !claimed {
-		if err != nil {
-			s.logger.ErrorContext(ctx, "webhook: claiming inbox event failed", "error", err, "event_id", eventID)
-		}
-		return
-	}
-	if err := s.reconciler.ProcessWebhookEvent(ctx, ev); err != nil {
-		s.metrics.ReconciliationFailures.Add(1)
-		s.logger.ErrorContext(ctx, "webhook: processing failed", "error", err, "project", ev.Project, "branch", ev.Branch)
-		if retryErr := s.store.MarkEventRetry(ctx, eventID, time.Now().UTC().Add(time.Second), err.Error()); retryErr != nil {
-			s.logger.ErrorContext(ctx, "webhook: scheduling retry failed", "error", retryErr, "event_id", eventID)
-		}
-		return
-	}
-	s.metrics.Reconciliations.Add(1)
-	if err := s.store.MarkEventProcessed(ctx, eventID, time.Now().UTC()); err != nil {
-		s.logger.ErrorContext(ctx, "webhook: marking inbox event processed", "error", err, "event_id", eventID)
-	}
 }
 
 // nextOffsetHeader advertises the offset of the following page. It is absent on
@@ -325,25 +332,45 @@ func (s *Server) handleDeleteEnvironment(w http.ResponseWriter, r *http.Request)
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handleRollbackEnvironment redeploys env's LastGoodArtifactRef through the
+// normal Apply path — a manual, operator-triggered counterpart to the automatic
+// rollback doApply already attempts on a failed redeploy. It reuses Apply
+// entirely rather than a bespoke code path, so it gets the same durable event,
+// retry, and locking guarantees as every other apply.
+func (s *Server) handleRollbackEnvironment(w http.ResponseWriter, r *http.Request) {
+	env, ok := s.lookupEnvironment(w, r)
+	if !ok {
+		return
+	}
+	if env.LastGoodArtifactRef == "" {
+		s.writeError(w, http.StatusConflict, "environment has no known-good revision to roll back to")
+		return
+	}
+	updated, err := s.reconciler.Apply(r.Context(), core.ApplyRequest{
+		Project: env.Project, Branch: env.Branch, PRNumber: env.PRNumber,
+		Subdomain: env.Subdomain, ArtifactRef: env.LastGoodArtifactRef,
+	})
+	if err != nil {
+		s.logger.ErrorContext(r.Context(), "rolling back environment", "error", err, "environment_id", env.ID)
+		s.writeError(w, http.StatusInternalServerError, "rolling back environment: "+err.Error())
+		return
+	}
+	s.writeJSON(w, http.StatusOK, updated)
+}
+
 func (s *Server) handleSleepEnvironment(w http.ResponseWriter, r *http.Request) {
 	env, ok := s.lookupEnvironment(w, r)
 	if !ok {
 		return
 	}
-	if env.DeployRef == "" {
-		s.writeError(w, http.StatusConflict, "environment has no deployment to sleep")
-		return
-	}
-	if err := s.deploy.Sleep(r.Context(), env.DeployRef); err != nil {
+	updated, err := s.reconciler.Sleep(r.Context(), env)
+	if err != nil {
+		if errors.Is(err, core.ErrInvalidEnvironmentAction) {
+			s.writeError(w, http.StatusConflict, err.Error())
+			return
+		}
 		s.logger.ErrorContext(r.Context(), "sleeping environment", "error", err, "environment_id", env.ID)
 		s.writeError(w, http.StatusInternalServerError, "sleeping environment: "+err.Error())
-		return
-	}
-	env.Status = store.StatusSleeping
-	updated, err := s.store.UpdateEnvironment(r.Context(), env)
-	if err != nil {
-		s.logger.ErrorContext(r.Context(), "recording sleep status", "error", err, "environment_id", env.ID)
-		s.writeError(w, http.StatusInternalServerError, "recording sleep status")
 		return
 	}
 	s.writeJSON(w, http.StatusOK, updated)
@@ -354,20 +381,14 @@ func (s *Server) handleWakeEnvironment(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if env.DeployRef == "" {
-		s.writeError(w, http.StatusConflict, "environment has no deployment to wake")
-		return
-	}
-	if err := s.deploy.Wake(r.Context(), env.DeployRef); err != nil {
+	updated, err := s.reconciler.Wake(r.Context(), env)
+	if err != nil {
+		if errors.Is(err, core.ErrInvalidEnvironmentAction) {
+			s.writeError(w, http.StatusConflict, err.Error())
+			return
+		}
 		s.logger.ErrorContext(r.Context(), "waking environment", "error", err, "environment_id", env.ID)
 		s.writeError(w, http.StatusInternalServerError, "waking environment: "+err.Error())
-		return
-	}
-	env.Status = store.StatusReady
-	updated, err := s.store.UpdateEnvironment(r.Context(), env)
-	if err != nil {
-		s.logger.ErrorContext(r.Context(), "recording wake status", "error", err, "environment_id", env.ID)
-		s.writeError(w, http.StatusInternalServerError, "recording wake status")
 		return
 	}
 	s.writeJSON(w, http.StatusOK, updated)

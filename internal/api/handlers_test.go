@@ -87,6 +87,34 @@ func TestHealthz(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 }
 
+func TestReadyzFailsWithoutWorkerHeartbeat(t *testing.T) {
+	h := newTestHarness(t)
+	rec := h.do(t, http.MethodGet, "/readyz", nil)
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+}
+
+func TestReadyzFailsOnStaleHeartbeat(t *testing.T) {
+	h := newTestHarness(t)
+	h.server.metrics.WorkerHeartbeat.Store(time.Now().Add(-time.Hour).UnixNano())
+	rec := h.do(t, http.MethodGet, "/readyz", nil)
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+}
+
+func TestReadyzFailsOnExcessiveBacklog(t *testing.T) {
+	h := newTestHarness(t)
+	h.server.metrics.WorkerHeartbeat.Store(time.Now().UnixNano())
+	h.server.metrics.InboxPending.Store(readyMaxInboxBacklog + 1)
+	rec := h.do(t, http.MethodGet, "/readyz", nil)
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+}
+
+func TestReadyzSucceedsWithFreshHeartbeatAndLowBacklog(t *testing.T) {
+	h := newTestHarness(t)
+	h.server.metrics.WorkerHeartbeat.Store(time.Now().UnixNano())
+	rec := h.do(t, http.MethodGet, "/readyz", nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+}
+
 func TestCreateAndGetEnvironment(t *testing.T) {
 	h := newTestHarness(t)
 
@@ -153,6 +181,38 @@ func TestDeleteEnvironment(t *testing.T) {
 	got, err := h.store.GetEnvironment(context.Background(), created.ID)
 	require.NoError(t, err)
 	require.Equal(t, store.StatusDestroyed, got.Status)
+}
+
+func TestRollbackWithNoKnownGoodRevisionReturns409(t *testing.T) {
+	h := newTestHarness(t)
+	rec := h.do(t, http.MethodPost, "/environments/", createEnvironmentRequest{Project: "acme/web", Branch: "feature-x", ArtifactRef: "ref1"})
+	var created store.Environment
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &created))
+
+	// A fresh, never-degraded environment already has ref1 recorded as its own
+	// last-good revision, so force it back to empty to exercise the "nothing to
+	// roll back to" case a brand-new environment could otherwise never reach in
+	// this test harness.
+	created.LastGoodArtifactRef = ""
+	_, err := h.store.UpdateEnvironment(context.Background(), created)
+	require.NoError(t, err)
+
+	rec = h.do(t, http.MethodPost, "/environments/"+created.ID+"/rollback", nil)
+	require.Equal(t, http.StatusConflict, rec.Code)
+}
+
+func TestRollbackRedeploysLastKnownGoodRevision(t *testing.T) {
+	h := newTestHarness(t)
+	rec := h.do(t, http.MethodPost, "/environments/", createEnvironmentRequest{Project: "acme/web", Branch: "feature-x", ArtifactRef: "ref1"})
+	var created store.Environment
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &created))
+
+	rec = h.do(t, http.MethodPost, "/environments/"+created.ID+"/rollback", nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var rolled store.Environment
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &rolled))
+	require.Equal(t, "ref1", rolled.ArtifactRef)
+	require.Equal(t, store.StatusReady, rolled.Status)
 }
 
 func TestSleepAndWakeEnvironment(t *testing.T) {

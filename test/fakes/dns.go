@@ -14,6 +14,11 @@ import (
 type DNSProvider struct {
 	mu      sync.Mutex
 	records map[string]providerapi.DNSRecord // keyed by Zone+"/"+Name
+
+	// DeleteErr, when set, is returned by every DeleteRecord call instead of
+	// succeeding, so tests can exercise compensating-cleanup ordering when one
+	// teardown step fails.
+	DeleteErr error
 }
 
 var _ providerapi.DNSProvider = (*DNSProvider)(nil)
@@ -40,6 +45,9 @@ func (f *DNSProvider) EnsureRecord(_ context.Context, rec providerapi.DNSRecord)
 func (f *DNSProvider) DeleteRecord(_ context.Context, rec providerapi.DNSRecord) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.DeleteErr != nil {
+		return f.DeleteErr
+	}
 	key := dnsKey(rec.Zone, rec.Name)
 	existing, ok := f.records[key]
 	if !ok {
