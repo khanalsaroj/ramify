@@ -14,11 +14,18 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	ghgithub "github.com/google/go-github/v66/github"
 
 	"github.com/khanalsaroj/ramify/providers/providerapi"
 )
+
+// httpClientTimeout bounds every GitHub REST API call made by NewWithToken's
+// client. Without it a hung connection to GitHub can block a durable event's
+// retry attempt indefinitely instead of failing and letting the reconciler's
+// own retry/backoff take over.
+const httpClientTimeout = 30 * time.Second
 
 // ErrInvalidSignature is returned by ParseWebhook when the HMAC-SHA256 signature
 // does not match the payload. It wraps providerapi.ErrInvalidWebhookSignature.
@@ -71,7 +78,7 @@ func (t *tokenTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 // NewWithToken constructs a Provider authenticated with a GitHub personal access
 // token or installation token.
 func NewWithToken(token, webhookSecret string) *Provider {
-	hc := &http.Client{Transport: &tokenTransport{token: token}}
+	hc := &http.Client{Transport: &tokenTransport{token: token}, Timeout: httpClientTimeout}
 	return New(ghgithub.NewClient(hc), webhookSecret)
 }
 

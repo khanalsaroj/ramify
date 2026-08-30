@@ -145,7 +145,9 @@ func run(configPath string, logger *slog.Logger) error {
 
 	reconciler := core.NewReconciler(st, deployProvider, dnsProvider, certProvider, notifyProvider,
 		core.NewRealClock(), cfg.BaseDomain, cfg.Reaper.DefaultTTL, logger,
-		core.WithAdmission(admission, cfg.Filter.MaxConcurrentEnvs))
+		core.WithAdmission(admission, cfg.Filter.MaxConcurrentEnvs),
+		core.WithReadiness(cfg.Deploy.ReadinessTimeout, cfg.Deploy.ReadinessPollInterval),
+		core.WithEventConcurrency(cfg.Reaper.EventConcurrency))
 	metricSet := &metrics.Metrics{}
 	reaper := core.NewReaper(st, reconciler, core.NewRealClock(), logger, metricSet)
 	server := api.NewServer(st, reconciler, gitProvider, deployProvider, cfg.BaseDomain, logger, metricSet)
@@ -160,7 +162,8 @@ func run(configPath string, logger *slog.Logger) error {
 
 	wg.Go(func() {
 		logger.Info("control api starting", "socket", cfg.Server.SocketPath, "tcp_addr", cfg.Server.TCPAddr)
-		if err := server.Serve(ctx, cfg.Server.SocketPath, cfg.Server.TCPAddr, cfg.Server.TCPToken); err != nil {
+		if err := server.Serve(ctx, cfg.Server.SocketPath, cfg.Server.TCPAddr, cfg.Server.TCPToken,
+			cfg.Server.TCPTLSCertFile, cfg.Server.TCPTLSKeyFile); err != nil {
 			errCh <- fmt.Errorf("control api: %w", err)
 		}
 	})
@@ -278,34 +281,60 @@ func newDeployProvider(cfg *config.Config, logger *slog.Logger) (providerapi.Dep
 	if provider == "" {
 		provider = "compose"
 	}
-	if provider == "kubernetes" {
-		return kubernetes.New(cfg.Deploy.KubernetesNamespace, cfg.BaseDomain, cfg.Deploy.DNSTarget,
+
+	var deployProvider providerapi.DeployProvider
+	switch provider {
+	case "kubernetes":
+		deployProvider = kubernetes.New(cfg.Deploy.KubernetesNamespace, cfg.BaseDomain, cfg.Deploy.DNSTarget,
 			cfg.Deploy.KubernetesIngressClass, cfg.Deploy.KubernetesKubeconfig, cfg.Deploy.KubernetesContext,
-			cfg.Deploy.KubernetesContainerPort, cfg.Deploy.KubernetesServicePort), nil
-	}
-	if provider != "compose" {
+			cfg.Deploy.KubernetesContainerPort, cfg.Deploy.KubernetesServicePort)
+	case "compose":
+		keyBytes, err := os.ReadFile(cfg.Deploy.SSHPrivateKeyPath) //nolint:gosec // operator-supplied, config-driven path
+		if err != nil {
+			return nil, fmt.Errorf("reading ssh private key: %w", err)
+		}
+		signer, err := ssh.ParsePrivateKey(keyBytes)
+		if err != nil {
+			return nil, fmt.Errorf("parsing ssh private key: %w", err)
+		}
+
+		hostKeyCallback, err := deployHostKeyCallback(cfg.Deploy.SSHKnownHostsPath, cfg.Deploy.SSHInsecureSkipHostKeyVerify, logger)
+		if err != nil {
+			return nil, err
+		}
+
+		deployProvider = compose.New(cfg.Deploy.SSHAddr, cfg.Deploy.SSHUser, signer, hostKeyCallback, cfg.Deploy.ComposeFile, cfg.Deploy.DNSTarget)
+	default:
 		return nil, fmt.Errorf("unsupported deploy provider %q", provider)
 	}
-	keyBytes, err := os.ReadFile(cfg.Deploy.SSHPrivateKeyPath) //nolint:gosec // operator-supplied, config-driven path
-	if err != nil {
-		return nil, fmt.Errorf("reading ssh private key: %w", err)
-	}
-	signer, err := ssh.ParsePrivateKey(keyBytes)
-	if err != nil {
-		return nil, fmt.Errorf("parsing ssh private key: %w", err)
+
+	// config.Validate already requires deploy.certificate_dir for compose, on
+	// the premise that the constructed provider can actually install what ACME
+	// issues. Check that premise here instead of only when SetCertificateDir is
+	// separately wired below: a provider that silently can't install a
+	// certificate would otherwise mark environments ready without TLS ever
+	// landing on the deploy host.
+	if cfg.Deploy.CertificateDir != "" {
+		if _, ok := deployProvider.(providerapi.CertificateInstaller); !ok {
+			return nil, fmt.Errorf("deploy provider %q does not support certificate installation but deploy.certificate_dir is set", provider)
+		}
 	}
 
-	hostKeyCallback, err := deployHostKeyCallback(cfg.Deploy.SSHKnownHostsPath, logger)
-	if err != nil {
-		return nil, err
-	}
-
-	return compose.New(cfg.Deploy.SSHAddr, cfg.Deploy.SSHUser, signer, hostKeyCallback, cfg.Deploy.ComposeFile, cfg.Deploy.DNSTarget), nil
+	return deployProvider, nil
 }
 
-func deployHostKeyCallback(knownHostsPath string, logger *slog.Logger) (ssh.HostKeyCallback, error) {
+// deployHostKeyCallback returns a callback that verifies the deploy host's SSH
+// key against knownHostsPath. config.Validate already requires knownHostsPath
+// or the explicit insecure opt-out for a compose deployment, so an empty path
+// reaching here with insecure unset is a programming error, not an operator
+// misconfiguration — it still fails closed rather than silently trusting
+// whatever host answers on ssh_addr.
+func deployHostKeyCallback(knownHostsPath string, insecure bool, logger *slog.Logger) (ssh.HostKeyCallback, error) {
 	if knownHostsPath == "" {
-		logger.Warn("deploy.ssh_known_hosts_path is not set; the deploy host's SSH key will not be verified")
+		if !insecure {
+			return nil, fmt.Errorf("deploy.ssh_known_hosts_path is required unless deploy.ssh_insecure_skip_host_key_verify is explicitly set")
+		}
+		logger.Warn("deploy.ssh_insecure_skip_host_key_verify is set; the deploy host's SSH key will not be verified")
 		return ssh.InsecureIgnoreHostKey(), nil //nolint:gosec // explicit operator opt-out, warned above
 	}
 	cb, err := knownhosts.New(knownHostsPath)

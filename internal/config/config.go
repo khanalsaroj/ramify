@@ -7,6 +7,7 @@ package config
 import (
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"strings"
 	"time"
@@ -35,6 +36,16 @@ type ServerConfig struct {
 	SocketPath string `yaml:"socket_path"`
 	TCPAddr    string `yaml:"tcp_addr,omitempty"`
 	TCPToken   string `yaml:"tcp_token,omitempty"`
+	// TCPTLSCertFile and TCPTLSKeyFile, if both set, serve the TCP listener over
+	// TLS instead of plaintext HTTP.
+	TCPTLSCertFile string `yaml:"tcp_tls_cert_file,omitempty"`
+	TCPTLSKeyFile  string `yaml:"tcp_tls_key_file,omitempty"`
+	// TCPInsecureAllowRemote explicitly opts into binding tcp_addr to a
+	// non-loopback address without TLS configured. Without it, a non-loopback
+	// tcp_addr with no TLS cert/key is a startup error: the bearer token and
+	// every environment API response would otherwise be sent in the clear to
+	// whoever can observe the network path.
+	TCPInsecureAllowRemote bool `yaml:"tcp_insecure_allow_remote,omitempty"`
 }
 
 // StoreConfig configures the SQLite state store.
@@ -42,11 +53,17 @@ type StoreConfig struct {
 	Path string `yaml:"path"`
 }
 
-// ReaperConfig configures TTL-based environment expiry.
+// ReaperConfig configures TTL-based environment expiry and the durable event
+// worker.
 type ReaperConfig struct {
 	Interval       time.Duration `yaml:"interval"`
 	DefaultTTL     time.Duration `yaml:"default_ttl"`
 	EventRetention time.Duration `yaml:"event_retention"`
+	// EventConcurrency caps how many due durable events (webhook/apply/destroy)
+	// are processed at once. Events for the same project/branch always run one
+	// at a time regardless of this value. Zero means use the built-in default
+	// (8).
+	EventConcurrency int `yaml:"event_concurrency,omitempty"`
 }
 
 // GitHubConfig configures providers/git/github.
@@ -70,13 +87,19 @@ type DeployConfig struct {
 	SSHAddr           string `yaml:"ssh_addr"`
 	SSHUser           string `yaml:"ssh_user"`
 	SSHPrivateKeyPath string `yaml:"ssh_private_key_path"`
-	// SSHKnownHostsPath, if set, verifies the deploy host's key against an
-	// OpenSSH-format known_hosts file. Left empty, the host key is not verified —
-	// acceptable only for a first connection to a host you've provisioned
-	// yourself; ramify doctor warns if this is unset.
+	// SSHKnownHostsPath verifies the deploy host's key against an OpenSSH-format
+	// known_hosts file. Required unless SSHInsecureSkipHostKeyVerify is set: with
+	// neither, Ramify refuses to start rather than silently connecting to
+	// whatever host answers on ssh_addr.
 	SSHKnownHostsPath string `yaml:"ssh_known_hosts_path,omitempty"`
-	ComposeFile       string `yaml:"compose_file"`
-	DNSTarget         string `yaml:"dns_target"`
+	// SSHInsecureSkipHostKeyVerify explicitly opts out of host key verification,
+	// accepting any host that answers on ssh_addr. Only ever safe for a
+	// throwaway/local test host; a network attacker who can intercept traffic to
+	// ssh_addr can otherwise impersonate the deploy host and capture every
+	// command Ramify runs.
+	SSHInsecureSkipHostKeyVerify bool   `yaml:"ssh_insecure_skip_host_key_verify,omitempty"`
+	ComposeFile                  string `yaml:"compose_file"`
+	DNSTarget                    string `yaml:"dns_target"`
 	// CertificateDir is the remote directory TLS material is installed into, read
 	// by the operator's reverse proxy. Required for the compose provider: it is
 	// the only path a certificate has to that host. Unused by kubernetes, which
@@ -88,6 +111,12 @@ type DeployConfig struct {
 	KubernetesIngressClass  string `yaml:"kubernetes_ingress_class,omitempty"`
 	KubernetesContainerPort int    `yaml:"kubernetes_container_port,omitempty"`
 	KubernetesServicePort   int    `yaml:"kubernetes_service_port,omitempty"`
+	// ReadinessTimeout and ReadinessPollInterval bound how long Apply waits for
+	// the deploy provider's HealthCheck to report healthy before treating the
+	// attempt as failed (it then retries with the reconciler's normal backoff).
+	// Zero means use the built-in default (2m timeout, 2s poll interval).
+	ReadinessTimeout      time.Duration `yaml:"readiness_timeout,omitempty"`
+	ReadinessPollInterval time.Duration `yaml:"readiness_poll_interval,omitempty"`
 }
 
 // DNSConfig configures providers/dns/cloudflare.
@@ -255,6 +284,12 @@ func (c Config) Validate() error {
 	if c.Server.TCPAddr != "" && c.Server.TCPToken == "" {
 		missing = append(missing, "server.tcp_token (required when server.tcp_addr is set)")
 	}
+	if c.Server.TCPAddr != "" {
+		tlsConfigured := c.Server.TCPTLSCertFile != "" && c.Server.TCPTLSKeyFile != ""
+		if !tlsConfigured && !c.Server.TCPInsecureAllowRemote && !isLoopbackAddr(c.Server.TCPAddr) {
+			missing = append(missing, "server.tcp_tls_cert_file and server.tcp_tls_key_file (or a loopback server.tcp_addr, or explicit server.tcp_insecure_allow_remote: true)")
+		}
+	}
 	if gitToken == "" {
 		missing = append(missing, "git.token")
 	}
@@ -281,6 +316,12 @@ func (c Config) Validate() error {
 		// apply does not.
 		if c.Deploy.CertificateDir == "" {
 			missing = append(missing, "deploy.certificate_dir")
+		}
+		// Required, not optional, unless the operator explicitly accepts the risk.
+		// Leaving both unset means Ramify would connect to whatever host answers
+		// on ssh_addr with no way to detect impersonation.
+		if c.Deploy.SSHKnownHostsPath == "" && !c.Deploy.SSHInsecureSkipHostKeyVerify {
+			missing = append(missing, "deploy.ssh_known_hosts_path (or explicit deploy.ssh_insecure_skip_host_key_verify: true)")
 		}
 	}
 	if deployProvider != "compose" && deployProvider != "kubernetes" {
@@ -324,6 +365,21 @@ func (c Config) Validate() error {
 		return fmt.Errorf("missing required fields: %s", strings.Join(missing, ", "))
 	}
 	return nil
+}
+
+// isLoopbackAddr reports whether addr — a "host:port" listen address — binds
+// to a loopback interface, the one case where an unencrypted TCP control API
+// listener doesn't need an explicit operator override.
+func isLoopbackAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // resolveEnv expands a "$NAME" or "${NAME}" value to the environment variable

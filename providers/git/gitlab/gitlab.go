@@ -18,9 +18,15 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/khanalsaroj/ramify/providers/providerapi"
 )
+
+// httpClientTimeout bounds every GitLab REST API call. Without it a hung
+// connection to GitLab can block a durable event's retry attempt indefinitely
+// instead of failing and letting the reconciler's own retry/backoff take over.
+const httpClientTimeout = 30 * time.Second
 
 // ErrInvalidSignature is returned by ParseWebhook when the X-Gitlab-Token header
 // does not match the configured webhook secret. It wraps
@@ -62,7 +68,7 @@ func New(token, webhookSecret, baseURL string) *Provider {
 		baseURL: strings.TrimRight(baseURL, "/"),
 		token:   token,
 		secret:  []byte(webhookSecret),
-		client:  &http.Client{},
+		client:  &http.Client{Timeout: httpClientTimeout},
 	}
 }
 

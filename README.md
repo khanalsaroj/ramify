@@ -40,6 +40,10 @@ together, automatically.
 - **Idempotent everything.** Deploy, DNS, and certificate operations are all safe
   to retry. TXT-record ownership tagging (external-dns style) means Ramify never
   touches a DNS record it doesn't own.
+- **Health-checked before "ready."** A successful deploy alone doesn't flip an
+  environment to `ready` — the reconciler polls the deploy provider's health
+  check first, so DNS and a certificate never point at a container or pod
+  that isn't actually up yet.
 - **Bounded.** An optional `filter:` block decides which branches earn an
   environment (— glob allow/deny patterns, a pull-request-only switch, a label
   gate, and a ceiling on how many can be live at once. At the ceiling Ramify
@@ -68,6 +72,10 @@ The built-in dashboard is available at `/dashboard/` on the optional TCP API
 listener. It provides environment filtering, status/TTL visibility, preview
 links, sleep/wake/destroy actions, and auto-refreshing deployment logs. It uses
 the configured TCP bearer token and stores it only in the browser's local storage.
+Every response, dashboard included, carries a `Content-Security-Policy` and
+related security headers; a non-loopback `server.tcp_addr` additionally
+requires TLS (`server.tcp_tls_cert_file`/`tcp_tls_key_file`) or an explicit
+`server.tcp_insecure_allow_remote: true` override before `ramifyd` will start.
 
 ## Documentation
 
@@ -132,7 +140,8 @@ deletes.
 flowchart LR
     A["PR opened<br/>or pushed"] --> B["Webhook verified,<br/>event logged"]
     B --> C["Reconciler applies<br/>(idempotent)"]
-    C --> D["Deploy + DNS<br/>+ TLS cert"]
+    C --> C2["Deploy, then wait for<br/>HealthCheck to pass"]
+    C2 --> D["DNS + TLS cert"]
     D --> E["Status comment<br/>posted to PR"]
     E --> F["TTL set /<br/>refreshed"]
     F -.->|"reaper checks<br/>on interval"| G{"TTL<br/>expired?"}
@@ -268,6 +277,8 @@ git:
 deploy:
   provider: compose                # compose or kubernetes
   ssh_addr: deploy-host.example.com:22
+  ssh_known_hosts_path: /etc/ramify/known_hosts   # required for compose, or set
+                                                   # ssh_insecure_skip_host_key_verify: true
   compose_file: /srv/ramify/docker-compose.yml
   dns_target: 203.0.113.10
 
@@ -277,10 +288,10 @@ dns:
   cloudflare_api_token: $RAMIFY_CLOUDFLARE_API_TOKEN
 
 filter:                            # optional; omit to deploy every branch push
-  pr_only: false
+  pr_only: true
   deny_branches: ["dependabot/**"]
   required_labels: []
-  max_concurrent_envs: 0           # 0 is unlimited
+  max_concurrent_envs: 10          # 0 is unlimited
 
 acme:
   email: ops@example.com

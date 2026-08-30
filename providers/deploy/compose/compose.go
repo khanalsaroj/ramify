@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strings"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 
@@ -20,6 +21,11 @@ import (
 )
 
 const maxProjectNameLength = 63
+
+// sshDialTimeout bounds the TCP connect phase of every SSH command run against
+// the deploy host, so a host that is unreachable (rather than merely slow to
+// respond) fails fast instead of hanging the calling reconciler attempt.
+const sshDialTimeout = 15 * time.Second
 
 // commandRunner executes a single shell command on the remote deploy host and
 // returns its combined stdout+stderr. Apply/Sleep/Wake/Destroy/HealthCheck are
@@ -68,7 +74,28 @@ func (p *Provider) InstallCertificate(ctx context.Context, domain string, certif
 	return nil
 }
 
+// RemoveCertificate deletes the certificate and private-key files InstallCertificate
+// wrote for domain. Removing files that don't exist is not an error, matching the
+// idempotent-teardown requirement on Destroy.
+func (p *Provider) RemoveCertificate(ctx context.Context, domain string) error {
+	if p.certificateDir == "" {
+		return fmt.Errorf("compose: certificate directory is not configured")
+	}
+	sum := sha256.Sum256([]byte(domain))
+	stem := hex.EncodeToString(sum[:])
+	certPath := p.certificateDir + "/" + stem + ".crt"
+	keyPath := p.certificateDir + "/" + stem + ".key"
+	cmd := fmt.Sprintf("rm -f %s %s", shellQuote(certPath), shellQuote(keyPath))
+	if _, err := p.runner.Run(ctx, cmd); err != nil {
+		return fmt.Errorf("compose: remove certificate %s: %w", domain, err)
+	}
+	return nil
+}
+
 var _ providerapi.DeployProvider = (*Provider)(nil)
+var _ providerapi.CertificateInstaller = (*Provider)(nil)
+var _ providerapi.CertificateRemover = (*Provider)(nil)
+var _ providerapi.LogFetcher = (*Provider)(nil)
 
 // New constructs a Provider that connects to addr over SSH as user, authenticating
 // with signer, running composeFile as the deploy target, and pointing DNS records
@@ -81,6 +108,7 @@ func New(addr, user string, signer ssh.Signer, hostKeyCallback ssh.HostKeyCallba
 				User:            user,
 				Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
 				HostKeyCallback: hostKeyCallback,
+				Timeout:         sshDialTimeout,
 			},
 		},
 		composeFile: composeFile,

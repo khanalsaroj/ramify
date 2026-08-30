@@ -119,6 +119,18 @@ func TestHealthCheckReportsUnreadyWhenNoReplicas(t *testing.T) {
 	require.False(t, status.Healthy)
 }
 
+func TestRemoveCertificateDeletesTheSecret(t *testing.T) {
+	runner := &fakeRunner{}
+	p := NewWithRunner(runner, "ramify", "preview.example.com", "203.0.113.10", "nginx", 8080, 80)
+
+	domain := "feature.preview.example.com"
+	require.NoError(t, p.RemoveCertificate(context.Background(), domain))
+
+	require.Len(t, runner.calls, 1)
+	call := runner.calls[0]
+	require.Equal(t, []string{"delete", "secret", tlsSecretName(domain), "-n", "ramify", "--ignore-not-found"}, call)
+}
+
 type emptyRunner struct{}
 
 func (*emptyRunner) Run(context.Context, []string, string) (string, error) { return "", nil }

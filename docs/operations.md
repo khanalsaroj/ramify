@@ -27,13 +27,27 @@ must not already exist.
 Test restores regularly by opening a copy with `ramifyd` or the SQLite CLI before
 depending on the backup for disaster recovery.
 
+## Readiness before "ready"
+
+A successful `Apply` from the deploy provider is not, by itself, enough to
+mark an environment `ready`. Before DNS and the certificate are touched, the
+reconciler polls the provider's `HealthCheck` — every
+`deploy.readiness_poll_interval` (default 2s) — until it reports healthy or
+`deploy.readiness_timeout` (default 2m) elapses. A readiness timeout surfaces
+as an ordinary apply failure and goes through the same 5-attempt retry budget
+as any other provider error, so it can dead-letter like any other permanent
+failure rather than leaving a half-up environment announced as live.
+
 ## Durable event processing
 
 Webhook deliveries are stored before acknowledgement and deduplicated by the
 delivery ID the configured Git host sends: `X-GitHub-Delivery` for GitHub,
 `X-Gitlab-Event-UUID` for GitLab, `X-Hook-UUID` for Bitbucket. A delivery that
 arrives without one is rejected, since it cannot be deduplicated on redelivery. Failed events record an attempt count, next retry time, and
-last error. The daemon's event worker retries due work continuously.
+last error. The daemon's event worker retries due work continuously, replaying
+up to `reaper.event_concurrency` events in parallel (default 8) — a bound
+that keeps one slow provider call from stalling every other pending event
+while still serializing events for the same project/branch.
 
 An event remaining pending indicates that the desired state has not been confirmed.
 Inspect logs and `/metrics` before manually changing provider resources.
@@ -84,6 +98,15 @@ held in that browser's local storage only. Polling stops while the tab is hidden
 and backs off geometrically when the daemon is unreachable, so a dashboard left
 open overnight is not a load source.
 
+Every response from the control API — dashboard included — carries a defensive
+header set (`X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`,
+`Referrer-Policy: no-referrer`, and a `Content-Security-Policy` scoped to
+`'self'`). Combined with TLS on a non-loopback `tcp_addr` (below), this is the
+mitigation for the token living in local storage: it stops the token leaking
+over the wire or exfiltrating to a third-party origin even under a
+script-injection scenario, though it doesn't change what a script running on
+the page itself could read.
+
 ## Limiting which branches deploy
 
 Left alone, every branch push produces an environment holding a DNS record, a
@@ -125,13 +148,21 @@ journalctl -u ramifyd | grep "skipped by admission policy"
 
 ## Production security baseline
 
-- Configure `deploy.ssh_known_hosts_path`.
+- Configure `deploy.ssh_known_hosts_path`. This is enforced, not just
+  recommended: `ramifyd` refuses to start a Compose deployment without it
+  unless you explicitly set `deploy.ssh_insecure_skip_host_key_verify: true`.
 - Keep the Unix socket at mode `0660` with a dedicated group.
 - Require `server.tcp_token` whenever `server.tcp_addr` is configured.
-- Put remote TCP access behind TLS or mTLS.
+- Put remote TCP access behind TLS: set `server.tcp_tls_cert_file` and
+  `server.tcp_tls_key_file` (or mTLS via your own reverse proxy). This is also
+  enforced — a non-loopback `tcp_addr` without TLS refuses to start unless you
+  explicitly set `server.tcp_insecure_allow_remote: true`.
 - Use zone-scoped DNS tokens and repository-scoped Git credentials, whichever providers you configure.
 - Protect the SQLite database and ACME storage directory with mode `0700`/`0600`.
 - Treat `/dashboard/` as public. The dashboard page and the base domain it reads
   are served without a bearer token, because a browser cannot attach an
   `Authorization` header to a top-level navigation. No environment data sits
   behind that exemption, but the listener itself belongs on a trusted network.
+- Destroying an environment removes its installed TLS private key material too
+  (the Kubernetes TLS Secret, or the Compose certificate/key files under
+  `deploy.certificate_dir`), not just its DNS record and ACME certificate.

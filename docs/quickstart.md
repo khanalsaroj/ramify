@@ -86,6 +86,12 @@ blindly:
 ssh-keyscan -t ed25519 YOUR_VPS_IP >> /etc/ramify/known_hosts
 ```
 
+This isn't optional: `ramifyd` refuses to start a Compose deployment without
+`deploy.ssh_known_hosts_path` set, unless you explicitly opt out with
+`deploy.ssh_insecure_skip_host_key_verify: true` in `ramify.yaml` (not
+recommended). Verify the fingerprint `ssh-keyscan` returns out of band (e.g.
+against your hosting provider's console) before trusting it.
+
 ## 5. Put a Compose file on the VPS
 
 Ramify runs `docker compose -f <path> up -d` with `IMAGE_TAG` and
@@ -189,7 +195,10 @@ internet. Put a reverse proxy with TLS in front of it (it listens on a unix
 socket by default; set `server.tcp_addr`/`server.tcp_token` in `ramify.yaml` if
 you'd rather expose TCP directly) and forward `/webhooks/github` through to it —
 Ramify does not include its own public-facing reverse proxy or TLS termination
-for its control API.
+for its control API. If you do expose `server.tcp_addr` directly rather than
+behind a reverse proxy, it must be loopback-only or carry its own TLS
+(`server.tcp_tls_cert_file` / `tcp_tls_key_file`) — `ramifyd` refuses to start
+otherwise unless you explicitly set `server.tcp_insecure_allow_remote: true`.
 
 ## 9. Add the GitHub webhook
 

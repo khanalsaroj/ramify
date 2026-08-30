@@ -22,6 +22,7 @@ github:
 deploy:
   ssh_addr: deploy.example.com:22
   ssh_private_key_path: /etc/ramify/deploy_key
+  ssh_known_hosts_path: /etc/ramify/known_hosts
   compose_file: /srv/ramify/docker-compose.yml
   dns_target: 203.0.113.10
   certificate_dir: /srv/ramify/certificates

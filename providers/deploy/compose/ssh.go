@@ -5,6 +5,7 @@ package compose
 import (
 	"context"
 	"fmt"
+	"net"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -39,20 +40,40 @@ func (r *sshRunner) Run(ctx context.Context, command string) (string, error) {
 }
 
 // dialContext dials an SSH connection honoring ctx cancellation, since
-// golang.org/x/crypto/ssh has no native context-aware Dial.
+// golang.org/x/crypto/ssh has no native context-aware Dial. The TCP connect
+// phase uses net.Dialer.DialContext, which is natively cancelable. The
+// handshake that follows (ssh.NewClientConn) has no context parameter, so it
+// runs in a goroutine bounded by the same ctx: on cancellation the raw
+// connection is closed to unblock it, and a client that completes the
+// handshake anyway after that point is closed rather than leaked.
 func dialContext(ctx context.Context, addr string, config *ssh.ClientConfig) (*ssh.Client, error) {
+	conn, err := (&net.Dialer{Timeout: config.Timeout}).DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+
 	type result struct {
 		client *ssh.Client
 		err    error
 	}
 	ch := make(chan result, 1)
 	go func() {
-		client, err := ssh.Dial("tcp", addr, config)
-		ch <- result{client: client, err: err}
+		c, chans, reqs, err := ssh.NewClientConn(conn, addr, config)
+		if err != nil {
+			ch <- result{err: err}
+			return
+		}
+		ch <- result{client: ssh.NewClient(c, chans, reqs)}
 	}()
 
 	select {
 	case <-ctx.Done():
+		_ = conn.Close() // unblocks NewClientConn; the goroutine below closes a client that arrives after this
+		go func() {
+			if res := <-ch; res.client != nil {
+				_ = res.client.Close()
+			}
+		}()
 		return nil, ctx.Err()
 	case res := <-ch:
 		return res.client, res.err

@@ -28,14 +28,6 @@ import (
 	"github.com/khanalsaroj/ramify/providers/providerapi"
 )
 
-// LogFetcher is an optional capability a DeployProvider implementation may satisfy,
-// checked via a type assertion in handleLogs. It is deliberately not part of
-// providerapi (§5 of the build spec forbids speculative interface methods): log
-// retrieval has no meaningful contract shared across every possible deploy target.
-type LogFetcher interface {
-	Logs(ctx context.Context, ref string) (string, error)
-}
-
 // Server is Ramify's local control plane HTTP API.
 type Server struct {
 	store        store.Store
@@ -92,6 +84,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) routes() chi.Router {
 	r := chi.NewRouter()
+	r.Use(securityHeaders)
 	r.Get("/healthz", s.handleHealthz)
 	r.Get("/readyz", s.handleReadyz)
 	r.Get("/metrics", s.handleMetrics)
@@ -123,9 +116,13 @@ func (s *Server) routes() chi.Router {
 }
 
 // Serve listens on socketPath (created fresh on every start) and, if tcpAddr is
-// non-empty, also on tcpAddr with bearer-token authentication using tcpToken. It
-// blocks until ctx is canceled, then shuts down both listeners gracefully.
-func (s *Server) Serve(ctx context.Context, socketPath, tcpAddr, tcpToken string) error {
+// non-empty, also on tcpAddr with bearer-token authentication using tcpToken. If
+// both tlsCertFile and tlsKeyFile are set, the TCP listener serves TLS; callers
+// are expected to have already enforced (config.Validate does) that a
+// non-loopback tcpAddr either has TLS configured or an explicit operator
+// override, since Serve itself has no opinion on which addresses are "remote".
+// It blocks until ctx is canceled, then shuts down both listeners gracefully.
+func (s *Server) Serve(ctx context.Context, socketPath, tcpAddr, tcpToken string, tlsCertFile, tlsKeyFile string) error {
 	unixListener, err := listenUnix(socketPath)
 	if err != nil {
 		return fmt.Errorf("api: %w", err)
@@ -156,8 +153,14 @@ func (s *Server) Serve(ctx context.Context, socketPath, tcpAddr, tcpToken string
 		}
 		tcpServer = &http.Server{Addr: tcpAddr, Handler: tokenAuth(tcpToken)(s), ReadHeaderTimeout: 10 * time.Second}
 		wg.Go(func() {
-			if err := tcpServer.Serve(tcpListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				errCh <- fmt.Errorf("api: tcp server: %w", err)
+			var serveErr error
+			if tlsCertFile != "" && tlsKeyFile != "" {
+				serveErr = tcpServer.ServeTLS(tcpListener, tlsCertFile, tlsKeyFile)
+			} else {
+				serveErr = tcpServer.Serve(tcpListener)
+			}
+			if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+				errCh <- fmt.Errorf("api: tcp server: %w", serveErr)
 			}
 		})
 	}
@@ -200,6 +203,25 @@ func listenUnix(path string) (net.Listener, error) {
 		return nil, fmt.Errorf("securing socket %s: %w", path, err)
 	}
 	return l, nil
+}
+
+// securityHeaders sets a small set of defensive headers on every response,
+// including the unauthenticated dashboard shell: CSP scoped to the dashboard's
+// actual shape (one self-contained HTML file, inline style/script, fetches to
+// its own origin only) blocks a script-injection scenario from exfiltrating
+// the bearer token to a third-party origin, and the rest are standard
+// clickjacking/MIME-sniffing/referrer hardening.
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Referrer-Policy", "no-referrer")
+		h.Set("Content-Security-Policy",
+			"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "+
+				"img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'")
+		next.ServeHTTP(w, r)
+	})
 }
 
 // tokenAuth requires a matching "Authorization: Bearer <token>" header on every

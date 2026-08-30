@@ -5,6 +5,7 @@ package core
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -22,8 +23,9 @@ type fakeClock struct {
 }
 
 func (c *fakeClock) Now() time.Time { return c.now }
-func (c *fakeClock) Sleep(time.Duration) {
+func (c *fakeClock) Sleep(d time.Duration) {
 	c.sleepCalls++
+	c.now = c.now.Add(d)
 }
 
 type harness struct {
@@ -265,4 +267,110 @@ func TestApplySetsAndRefreshesTTLWhenConfigured(t *testing.T) {
 	env, err = rec.Apply(ctx, req)
 	require.NoError(t, err)
 	require.True(t, env.TTLExpiresAt.Equal(h.clock.now.Add(24*time.Hour)), "TTL must refresh on every successful apply")
+}
+
+func TestApplyWaitsForReadinessBeforeReady(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.deploy.UnhealthyChecks = 3
+
+	env, err := h.rec.Apply(ctx, ApplyRequest{Project: "acme/web", Branch: "feature-x", Subdomain: "feature-x", ArtifactRef: "ref1"})
+	require.NoError(t, err)
+	require.Equal(t, store.StatusReady, env.Status)
+	require.Equal(t, 3, h.clock.sleepCalls, "must poll HealthCheck until healthy before marking ready")
+
+	require.Len(t, h.notify.Notifications, 1)
+	require.Equal(t, "ready", h.notify.Notifications[0].Event.Kind)
+}
+
+func TestApplyReadinessTimeoutRetriesThenFails(t *testing.T) {
+	h := newHarness(t)
+	rec := NewReconciler(h.store, h.deploy, h.dns, h.cert, h.notify, h.clock, "preview.example.com", 0, nil,
+		WithReadiness(6*time.Second, 2*time.Second))
+	ctx := context.Background()
+	h.deploy.UnhealthyChecks = 1000 // never reports healthy within this test
+
+	_, err := rec.Apply(ctx, ApplyRequest{Project: "acme/web", Branch: "feature-x", Subdomain: "feature-x", ArtifactRef: "ref1"})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "readiness")
+
+	env, err := h.store.GetEnvironmentByProjectBranch(ctx, "acme/web", "feature-x")
+	require.NoError(t, err)
+	require.Equal(t, store.StatusFailed, env.Status)
+	require.Empty(t, env.DeployRef, "an environment that never became healthy must not be published as ready")
+
+	require.Len(t, h.notify.Notifications, 1)
+	require.Equal(t, "failed", h.notify.Notifications[0].Event.Kind)
+}
+
+func TestDestroyRemovesDeployedCertificate(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	env, err := h.rec.Apply(ctx, ApplyRequest{Project: "acme/web", Branch: "feature-x", Subdomain: "feature-x", ArtifactRef: "ref1"})
+	require.NoError(t, err)
+
+	require.NoError(t, h.rec.Destroy(ctx, env))
+
+	require.Equal(t, []string{"feature-x.preview.example.com"}, h.deploy.RemovedCertificates())
+}
+
+// ReplayEvents must never run more than the configured ceiling of events
+// concurrently, while still processing every one of them. Events for distinct
+// branches take distinct per-branch locks, so nothing here serializes them
+// except the worker pool itself.
+func TestReplayEventsBoundedConcurrency(t *testing.T) {
+	h := newHarness(t)
+	h.rec = NewReconciler(h.store, h.deploy, h.dns, h.cert, h.notify, h.clock, "preview.example.com", 0, nil, WithEventConcurrency(2))
+	ctx := context.Background()
+
+	const branchCount = 5
+	var events []store.Event
+	for i := 0; i < branchCount; i++ {
+		branch := fmt.Sprintf("feature-%d", i)
+		env, err := h.store.CreateEnvironment(ctx, store.Environment{
+			Project: "acme/web", Branch: branch, Subdomain: branch, ArtifactRef: "ref1", Status: store.StatusPending,
+		})
+		require.NoError(t, err)
+		payload, err := marshalApplyPayload(ApplyRequest{Project: "acme/web", Branch: branch, Subdomain: branch, ArtifactRef: "ref1"})
+		require.NoError(t, err)
+		ev, err := h.store.CreateEvent(ctx, store.Event{EnvironmentID: env.ID, Kind: EventKindApplyRequested, Payload: payload})
+		require.NoError(t, err)
+		events = append(events, ev)
+	}
+
+	gate := make(chan struct{})
+	h.deploy.ApplyGate = gate
+	done := make(chan error, 1)
+	go func() { done <- h.rec.ReplayEvents(ctx, events) }()
+
+	for i := 0; i < branchCount; i++ {
+		gate <- struct{}{}
+	}
+	require.NoError(t, <-done)
+	require.LessOrEqual(t, h.deploy.MaxInFlight(), int32(2), "must never exceed the configured worker ceiling")
+
+	for i := 0; i < branchCount; i++ {
+		branch := fmt.Sprintf("feature-%d", i)
+		env, err := h.store.GetEnvironmentByProjectBranch(ctx, "acme/web", branch)
+		require.NoError(t, err)
+		require.Equal(t, store.StatusReady, env.Status, "every event must still be processed")
+	}
+}
+
+func TestKeyedMutexReleasesIdleEntries(t *testing.T) {
+	km := newKeyedMutex()
+
+	unlock := km.Lock("a")
+	require.Equal(t, 1, km.len())
+	unlock()
+	require.Equal(t, 0, km.len(), "an idle key must be forgotten, not retained forever")
+
+	unlockA := km.Lock("a")
+	unlockB := km.Lock("b")
+	require.Equal(t, 2, km.len())
+	unlockA()
+	require.Equal(t, 1, km.len())
+	unlockB()
+	require.Equal(t, 0, km.len())
 }

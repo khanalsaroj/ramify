@@ -4,6 +4,14 @@ package api
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +22,36 @@ import (
 
 	"github.com/stretchr/testify/require"
 )
+
+// generateSelfSignedCert writes a throwaway self-signed certificate and key for
+// "127.0.0.1" to dir, returning their paths, so tests can exercise Serve's TLS
+// path without depending on any real CA.
+func generateSelfSignedCert(t *testing.T, dir string) (certPath, keyPath string) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "127.0.0.1"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	require.NoError(t, err)
+
+	certPath = filepath.Join(dir, "cert.pem")
+	require.NoError(t, os.WriteFile(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600))
+
+	keyBytes, err := x509.MarshalECPrivateKey(key)
+	require.NoError(t, err)
+	keyPath = filepath.Join(dir, "key.pem")
+	require.NoError(t, os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyBytes}), 0o600))
+	return certPath, keyPath
+}
 
 // shortSocketPath returns a unix socket path short enough to fit in sockaddr_un's
 // sun_path, which is 104 bytes on Darwin and 108 on Linux. t.TempDir() is unusable
@@ -35,7 +73,7 @@ func TestServeUnixSocket(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- h.server.Serve(ctx, socketPath, "", "")
+		done <- h.server.Serve(ctx, socketPath, "", "", "", "")
 	}()
 
 	client := &http.Client{
@@ -89,7 +127,7 @@ func TestServeTCPRequiresBearerToken(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- h.server.Serve(ctx, socketPath, "127.0.0.1:18743", "secret-token")
+		done <- h.server.Serve(ctx, socketPath, "127.0.0.1:18743", "secret-token", "", "")
 	}()
 
 	// exited records that Serve gave up on its own, in which case done is already
@@ -127,4 +165,66 @@ func TestServeTCPRequiresBearerToken(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, authorized.StatusCode)
 	_ = authorized.Body.Close()
+}
+
+func TestServeTCPWithTLS(t *testing.T) {
+	h := newTestHarness(t)
+	socketPath := shortSocketPath(t)
+	certPath, keyPath := generateSelfSignedCert(t, t.TempDir())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- h.server.Serve(ctx, socketPath, "127.0.0.1:18744", "secret-token", certPath, keyPath)
+	}()
+
+	var exited bool
+	defer func() {
+		cancel()
+		if !exited {
+			<-done
+		}
+	}()
+
+	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}} //nolint:gosec // test-only, self-signed cert
+
+	var resp *http.Response
+	var err error
+	var serveErr error
+	require.Eventually(t, func() bool {
+		select {
+		case serveErr = <-done:
+			exited = true
+			return true
+		default:
+		}
+		req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, "https://127.0.0.1:18744/healthz", nil)
+		require.NoError(t, reqErr)
+		req.Header.Set("Authorization", "Bearer secret-token")
+		resp, err = client.Do(req)
+		return err == nil
+	}, 5*time.Second, 20*time.Millisecond, "tls tcp listener must become reachable")
+	require.False(t, exited, "Serve returned before the tls listener became reachable: %v", serveErr)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	_ = resp.Body.Close()
+}
+
+// TestSecurityHeadersOnEveryResponse checks a defensive header set is present
+// on both an authenticated API route and the unauthenticated dashboard shell,
+// since securityHeaders wraps the whole router rather than individual routes.
+func TestSecurityHeadersOnEveryResponse(t *testing.T) {
+	h := newTestHarness(t)
+
+	for _, path := range []string{"/healthz", "/dashboard/"} {
+		req, err := http.NewRequest(http.MethodGet, path, nil)
+		require.NoError(t, err)
+		rec := httptest.NewRecorder()
+		h.server.ServeHTTP(rec, req)
+
+		require.Equal(t, "nosniff", rec.Header().Get("X-Content-Type-Options"), path)
+		require.Equal(t, "DENY", rec.Header().Get("X-Frame-Options"), path)
+		require.Equal(t, "no-referrer", rec.Header().Get("Referrer-Policy"), path)
+		require.Contains(t, rec.Header().Get("Content-Security-Policy"), "default-src 'self'", path)
+	}
 }

@@ -151,6 +151,38 @@ func (errorRunner) Run(context.Context, string) (string, error) {
 	return "", fmt.Errorf("connection refused")
 }
 
+// recordingRunner records every command it's asked to run and succeeds, for
+// tests that only care what command was sent, not simulating compose state.
+type recordingRunner struct {
+	mu       sync.Mutex
+	commands []string
+}
+
+func (r *recordingRunner) Run(_ context.Context, command string) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.commands = append(r.commands, command)
+	return "", nil
+}
+
+func TestRemoveCertificateDeletesFiles(t *testing.T) {
+	runner := &recordingRunner{}
+	p := newWithRunner(runner, "/srv/ramify/docker-compose.yml", "203.0.113.10")
+	p.SetCertificateDir("/srv/ramify/certificates")
+
+	require.NoError(t, p.RemoveCertificate(context.Background(), "feature-x.preview.example.com"))
+
+	require.Len(t, runner.commands, 1)
+	require.Contains(t, runner.commands[0], "rm -f")
+	require.Contains(t, runner.commands[0], "/srv/ramify/certificates/")
+}
+
+func TestRemoveCertificateRequiresConfiguredDir(t *testing.T) {
+	p := newWithRunner(&recordingRunner{}, "/srv/ramify/docker-compose.yml", "203.0.113.10")
+	err := p.RemoveCertificate(context.Background(), "feature-x.preview.example.com")
+	require.Error(t, err)
+}
+
 func envSpec(project, branch, artifactRef, previousRef string) providerapi.EnvSpec {
 	return providerapi.EnvSpec{Project: project, Branch: branch, Subdomain: branch, ArtifactRef: artifactRef, PreviousRef: previousRef}
 }
