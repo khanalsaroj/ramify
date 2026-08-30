@@ -26,8 +26,13 @@ func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError + 1}))
 }
 
-func TestDeployHostKeyCallbackFallsBackToInsecure(t *testing.T) {
-	cb, err := deployHostKeyCallback("", discardLogger())
+func TestDeployHostKeyCallbackRequiresKnownHostsByDefault(t *testing.T) {
+	_, err := deployHostKeyCallback("", false, discardLogger())
+	require.Error(t, err)
+}
+
+func TestDeployHostKeyCallbackAllowsExplicitInsecureOverride(t *testing.T) {
+	cb, err := deployHostKeyCallback("", true, discardLogger())
 	require.NoError(t, err)
 	require.NotNil(t, cb)
 }
@@ -42,14 +47,14 @@ func TestDeployHostKeyCallbackLoadsKnownHosts(t *testing.T) {
 	line := knownhosts.Line([]string{"example.com:22"}, sshPub) + "\n"
 	require.NoError(t, os.WriteFile(path, []byte(line), 0o600))
 
-	cb, err := deployHostKeyCallback(path, discardLogger())
+	cb, err := deployHostKeyCallback(path, false, discardLogger())
 	require.NoError(t, err)
 	addr := &net.TCPAddr{IP: net.ParseIP("192.0.2.1"), Port: 22}
 	require.NoError(t, cb("example.com:22", addr, sshPub))
 }
 
 func TestDeployHostKeyCallbackMissingFile(t *testing.T) {
-	_, err := deployHostKeyCallback(filepath.Join(t.TempDir(), "does-not-exist"), discardLogger())
+	_, err := deployHostKeyCallback(filepath.Join(t.TempDir(), "does-not-exist"), false, discardLogger())
 	require.Error(t, err)
 }
 

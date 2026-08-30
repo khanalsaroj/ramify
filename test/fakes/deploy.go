@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"github.com/khanalsaroj/ramify/providers/providerapi"
 )
@@ -37,13 +38,30 @@ type DeployProvider struct {
 	// applyCalls counts every Apply invocation, including ones that fail, so
 	// tests can assert retry/backoff behavior.
 	applyCalls int
+	// UnhealthyChecks, when non-zero, makes the first UnhealthyChecks
+	// HealthCheck calls per ref report unhealthy before reporting healthy, so
+	// tests can exercise Apply's readiness-polling loop deterministically.
+	UnhealthyChecks int
+	healthChecks    map[string]int // ref -> HealthCheck calls so far
+
+	// removedCertificates records every RemoveCertificate call, in order, so
+	// tests can assert Destroy tears down deployed TLS material.
+	removedCertificates []string
+
+	// ApplyGate, if non-nil, makes every Apply call block on a receive from this
+	// channel before proceeding, letting a test control exactly how many Apply
+	// calls are in flight at once — used to assert bounded concurrency.
+	ApplyGate   chan struct{}
+	inFlight    int32
+	maxInFlight int32
 }
 
 var _ providerapi.DeployProvider = (*DeployProvider)(nil)
+var _ providerapi.CertificateRemover = (*DeployProvider)(nil)
 
 // NewDeployProvider returns an empty fake DeployProvider.
 func NewDeployProvider() *DeployProvider {
-	return &DeployProvider{deployments: make(map[string]*deployment)}
+	return &DeployProvider{deployments: make(map[string]*deployment), healthChecks: make(map[string]int)}
 }
 
 func refFor(spec providerapi.EnvSpec) string {
@@ -55,9 +73,24 @@ func refFor(spec providerapi.EnvSpec) string {
 func (f *DeployProvider) Apply(_ context.Context, spec providerapi.EnvSpec) (providerapi.Deployment, error) {
 	f.mu.Lock()
 	f.applyCalls++
+	gate := f.ApplyGate
 	f.mu.Unlock()
 	if f.ApplyErr != nil {
 		return providerapi.Deployment{}, f.ApplyErr
+	}
+	if gate != nil {
+		n := atomic.AddInt32(&f.inFlight, 1)
+		for {
+			old := atomic.LoadInt32(&f.maxInFlight)
+			if n <= old {
+				break
+			}
+			if atomic.CompareAndSwapInt32(&f.maxInFlight, old, n) {
+				break
+			}
+		}
+		<-gate
+		atomic.AddInt32(&f.inFlight, -1)
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -122,6 +155,10 @@ func (f *DeployProvider) HealthCheck(_ context.Context, ref string) (providerapi
 	if !ok {
 		return providerapi.Status{}, fmt.Errorf("fakes: unknown deployment ref %q", ref)
 	}
+	if d.state == deployStateRunning && f.healthChecks[ref] < f.UnhealthyChecks {
+		f.healthChecks[ref]++
+		return providerapi.Status{Healthy: false, Detail: "starting"}, nil
+	}
 	switch d.state {
 	case deployStateRunning:
 		return providerapi.Status{Healthy: true, Detail: "running"}, nil
@@ -130,6 +167,22 @@ func (f *DeployProvider) HealthCheck(_ context.Context, ref string) (providerapi
 	default:
 		return providerapi.Status{Healthy: false, Detail: "destroyed"}, nil
 	}
+}
+
+// RemoveCertificate implements providerapi.CertificateRemover.
+func (f *DeployProvider) RemoveCertificate(_ context.Context, domain string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.removedCertificates = append(f.removedCertificates, domain)
+	return nil
+}
+
+// RemovedCertificates reports every domain RemoveCertificate has been called
+// with, in call order.
+func (f *DeployProvider) RemovedCertificates() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.removedCertificates...)
 }
 
 // ApplyCount reports how many times Apply has succeeded for ref, so tests can
@@ -150,4 +203,11 @@ func (f *DeployProvider) ApplyCalls() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.applyCalls
+}
+
+// MaxInFlight reports the highest number of concurrent Apply calls observed
+// while ApplyGate was set, so tests can assert a bounded worker pool never
+// exceeded its configured ceiling.
+func (f *DeployProvider) MaxInFlight() int32 {
+	return atomic.LoadInt32(&f.maxInFlight)
 }

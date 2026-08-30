@@ -663,19 +663,23 @@ sudo systemctl enable --now ramifyd</code></pre>
             <tr><td><code>base_domain</code></td><td><code>preview.example.com</code></td><td>Zone/suffix preview environments publish under — branch <code>feature-x</code> → <code>feature-x.preview.example.com</code></td></tr>
             <tr><td><code>server.socket_path</code></td><td><code>/var/run/ramify/ramify.sock</code></td><td>Control API unix socket</td></tr>
             <tr><td><code>server.tcp_addr</code> / <code>tcp_token</code></td><td><em>empty</em></td><td>Optional token-protected TCP listener for remote CLI access</td></tr>
+            <tr><td><code>server.tcp_tls_cert_file</code> / <code>tcp_tls_key_file</code></td><td><em>empty</em></td><td>TLS for <code>tcp_addr</code>. Required for a non-loopback <code>tcp_addr</code> unless <code>tcp_insecure_allow_remote: true</code> is set explicitly</td></tr>
             <tr><td><code>store.path</code></td><td><code>/var/lib/ramify/ramify.db</code></td><td>SQLite state database path</td></tr>
             <tr><td><code>reaper.interval</code></td><td><code>5m</code></td><td>How often the reaper checks for expired environments</td></tr>
             <tr><td><code>reaper.default_ttl</code></td><td><code>72h</code></td><td>TTL applied to a new environment unless overridden</td></tr>
+            <tr><td><code>reaper.event_concurrency</code></td><td><code>8</code></td><td>Max durable events replayed in parallel; per-branch events still serialize</td></tr>
             <tr><td><code>git.provider</code></td><td><code>github</code></td><td><code>github</code>, <code>gitlab</code>, or <code>bitbucket</code> &mdash; defaults to <code>github</code></td></tr>
             <tr><td><code>git.token</code></td><td><code>$RAMIFY_GITHUB_TOKEN</code></td><td>Token used to post PR status comments</td></tr>
             <tr><td><code>git.webhook_secret</code></td><td><code>$RAMIFY_GITHUB_WEBHOOK_SECRET</code></td><td>Secret configured on the repository webhook. GitHub and Bitbucket sign with it; GitLab sends it back verbatim</td></tr>
             <tr><td><code>git.base_url</code></td><td><em>empty</em></td><td>Set for self-hosted GitLab; GitHub and Bitbucket Cloud use their public defaults</td></tr>
             <tr><td><code>deploy.provider</code></td><td><code>compose</code></td><td><code>compose</code> or <code>kubernetes</code> &mdash; decides which deploy fields below apply</td></tr>
             <tr><td><code>deploy.ssh_addr</code> / <code>ssh_user</code> / <code>ssh_private_key_path</code></td><td><code>host:22</code>, <code>ramify</code>, <code>/etc/ramify/deploy_key</code></td><td>How Ramify reaches the deploy host (Compose only)</td></tr>
+            <tr><td><code>deploy.ssh_known_hosts_path</code></td><td><code>/etc/ramify/known_hosts</code></td><td>Pinned SSH host key (Compose only). Required unless <code>ssh_insecure_skip_host_key_verify: true</code> is set explicitly &mdash; <code>ramifyd</code> refuses to start otherwise</td></tr>
             <tr><td><code>deploy.compose_file</code></td><td><code>/srv/ramify/docker-compose.yml</code></td><td>Compose file run with <code>IMAGE_TAG</code> + <code>COMPOSE_PROJECT_NAME</code> per environment (Compose only)</td></tr>
-            <tr><td><code>deploy.certificate_dir</code></td><td><code>/srv/ramify/certificates</code></td><td>Remote directory TLS material is installed into, read by your reverse proxy. Required for Compose &mdash; it is the only route a certificate has to that host</td></tr>
+            <tr><td><code>deploy.certificate_dir</code></td><td><code>/srv/ramify/certificates</code></td><td>Remote directory TLS material is installed into, read by your reverse proxy. Required for Compose &mdash; it is the only route a certificate has to that host. Removed automatically on destroy</td></tr>
             <tr><td><code>deploy.kubernetes_namespace</code></td><td><code>ramify</code></td><td>Existing namespace preview workloads are applied into (Kubernetes only; Ramify does not create it)</td></tr>
             <tr><td><code>deploy.dns_target</code></td><td><code>203.0.113.10</code></td><td>Address DNS records point to &mdash; usually the deploy host itself</td></tr>
+            <tr><td><code>deploy.readiness_timeout</code> / <code>readiness_poll_interval</code></td><td><code>0</code> / <code>0</code></td><td><code>0</code> uses the built-in defaults (2m / 2s). How long and how often Ramify polls <code>HealthCheck</code> before marking an environment ready</td></tr>
             <tr><td><code>dns.provider</code></td><td><code>cloudflare</code></td><td><code>cloudflare</code>, <code>route53</code>, <code>googlecloud</code>, or <code>digitalocean</code></td></tr>
             <tr><td><code>dns.zone</code> / <code>cloudflare_api_token</code></td><td><code>preview.example.com</code>, <code>$RAMIFY_CLOUDFLARE_API_TOKEN</code></td><td>Zone, and the API token for Cloudflare or DigitalOcean. Route&nbsp;53 and Google Cloud take credentials from their ambient chains instead</td></tr>
             <tr><td><code>acme.email</code> / <code>ca_dir_url</code></td><td><code>ops@example.com</code>, Let's Encrypt directory URL</td><td>ACME account contact and directory — point at the staging directory while testing</td></tr>
@@ -716,6 +720,13 @@ sudo systemctl enable --now ramifyd</code></pre>
       wiring it into <code>ramifyd</code>'s startup — there's no out-of-process plugin protocol yet (see FAQ).
       See <a href="https://github.com/khanalsaroj/ramify/blob/main/docs/providers.md" target="_blank" rel="noopener">docs/providers.md</a>
       for how to run the contract suite against a real account instead of the in-memory fakes CI uses.</p>
+      <p class="muted" style="margin-top:14px;">A <code>DeployProvider</code> can also optionally implement named
+      capabilities from <code>providers/providerapi/capabilities.go</code> &mdash;
+      <code>CertificateInstaller</code>, <code>CertificateRemover</code>, and <code>LogFetcher</code> &mdash;
+      checked via type assertion rather than required on every deploy target. Both built-in providers implement
+      all three; <code>RemoveCertificate</code> runs during teardown so destroying an environment doesn't leave
+      its TLS private key material behind. <code>HealthCheck</code> gates readiness: the reconciler polls it
+      after <code>Apply</code> succeeds and before DNS/certificate work starts.</p>
 
       <h3 style="margin-top:30px;">The end-to-end harness</h3>
       <p class="muted">Contract suites pin down one provider at a time. <code>test/e2e</code> checks that they
@@ -794,14 +805,28 @@ docker compose -f test/e2e/docker-compose.dev.yml down --volumes</code></pre>
       <p class="muted" style="margin-top:14px;">The page prompts for the same <code>server.tcp_token</code> the CLI
       uses and keeps it in browser storage only. Every route that reads or changes an environment stays
       bearer-authenticated; only the static page itself is served unauthenticated, because a browser cannot attach
-      an <code>Authorization</code> header to a top-level navigation.</p>
+      an <code>Authorization</code> header to a top-level navigation. Every response carries a defensive header
+      set (<code>X-Content-Type-Options</code>, <code>X-Frame-Options</code>, <code>Referrer-Policy</code>, and a
+      <code>Content-Security-Policy</code> scoped to <code>'self'</code>) as mitigation for the token living in
+      local storage, and a non-loopback <code>server.tcp_addr</code> additionally requires TLS or an explicit
+      insecure override before <code>ramifyd</code> will start.</p>
+
+      <h3 style="margin-top:30px;">Readiness before "ready"</h3>
+      <p class="muted">A successful <code>Apply</code> alone doesn't flip an environment to
+      <code>ready</code>. Before DNS and the certificate are touched, the reconciler polls the deploy
+      provider's <code>HealthCheck</code> — every <code>deploy.readiness_poll_interval</code> (default 2s) —
+      until it reports healthy or <code>deploy.readiness_timeout</code> (default 2m) elapses. A readiness
+      timeout is just another apply failure and goes through the same 5-attempt retry budget as any other
+      provider error.</p>
 
       <h3 style="margin-top:30px;">Durable events, retries, and dead-lettering</h3>
       <p class="muted">A webhook delivery is written to the store <em>before</em> it is acknowledged, and
       deduplicated by its <code>X-GitHub-Delivery</code> header, so a GitHub redelivery can never apply twice.
       Failed events record an attempt count, a next-retry time, and their last error; the daemon's worker
       retries whatever is due, with exponential backoff and jitter — a batch of events that all failed against
-      one provider outage doesn't stampede back in lockstep when it recovers.</p>
+      one provider outage doesn't stampede back in lockstep when it recovers. Up to
+      <code>reaper.event_concurrency</code> events (default 8) are replayed in parallel, bounded so one slow
+      provider call can't stall every other pending event; events for the same project/branch still serialize.</p>
       <p class="muted">An event is <strong>retired instead of retried</strong> when it can't ever succeed — an
       unmanaged DNS record collision, an ownership mismatch, an unparseable payload, an environment that no
       longer exists — or when it exhausts its attempt budget. Retired events keep their last error and stay in
@@ -824,12 +849,13 @@ docker compose -f test/e2e/docker-compose.dev.yml down --volumes</code></pre>
 
       <h3 style="margin-top:30px;">Production security baseline</h3>
       <ul style="font-size:.92rem;color:var(--text-muted);padding-left:20px;max-width:660px;">
-        <li>Configure <code>deploy.ssh_known_hosts_path</code> — pin the host key rather than trusting it blindly.</li>
+        <li>Configure <code>deploy.ssh_known_hosts_path</code> — pin the host key rather than trusting it blindly. This is enforced: <code>ramifyd</code> refuses to start a Compose deployment without it unless <code>ssh_insecure_skip_host_key_verify: true</code> is set explicitly.</li>
         <li>Keep the unix socket at mode <code>0660</code> with a dedicated group.</li>
-        <li>Require <code>server.tcp_token</code> whenever <code>server.tcp_addr</code> is set, and put remote TCP access behind TLS or mTLS.</li>
+        <li>Require <code>server.tcp_token</code> whenever <code>server.tcp_addr</code> is set, and put remote TCP access behind TLS (<code>tcp_tls_cert_file</code>/<code>tcp_tls_key_file</code>) or mTLS via your own reverse proxy — also enforced for a non-loopback <code>tcp_addr</code> unless <code>tcp_insecure_allow_remote: true</code> is set explicitly.</li>
         <li>Use zone-scoped DNS tokens and repository-scoped Git credentials, whichever provider you configure.</li>
         <li>Treat <code>/dashboard/</code> as public: the page and the base domain it reads are unauthenticated, so put the TCP listener on a trusted network even though every environment route needs the token.</li>
         <li>Protect the SQLite database and the ACME storage directory with mode <code>0700</code>/<code>0600</code>.</li>
+        <li>Destroying an environment removes its installed TLS private key material too — the Kubernetes TLS Secret, or the Compose certificate/key files under <code>deploy.certificate_dir</code>.</li>
       </ul>
       <p class="muted" style="margin-top:14px;">Full detail:
       <a href="https://github.com/khanalsaroj/ramify/blob/main/docs/operations.md" target="_blank" rel="noopener">docs/operations.md</a>.</p>
@@ -945,6 +971,22 @@ EOF</code></pre>
         <summary>Do secrets ever end up written to disk in plain text?</summary>
         <p>Not if you use the <code>$NAME</code>/<code>${NAME}</code> indirection — the literal value is resolved
         from the environment at load time and never has to live in <code>ramify.yaml</code> itself.</p>
+      </details>
+      <details class="faq-item">
+        <summary>Can an environment be marked ready before the container is actually up?</summary>
+        <p>No. After <code>Apply</code> succeeds, the reconciler polls the deploy provider's
+        <code>HealthCheck</code> until it reports healthy — or <code>deploy.readiness_timeout</code> (2m by
+        default) elapses — before DNS and the certificate are touched. A timeout is treated as an ordinary
+        apply failure and retried like any other.</p>
+      </details>
+      <details class="faq-item">
+        <summary>Is it safe to expose the remote control API and dashboard over the internet?</summary>
+        <p>Only behind TLS. A non-loopback <code>server.tcp_addr</code> requires
+        <code>tcp_tls_cert_file</code>/<code>tcp_tls_key_file</code> (or an explicit
+        <code>tcp_insecure_allow_remote: true</code> opt-out) — <code>ramifyd</code> refuses to start otherwise.
+        Every response also carries a <code>Content-Security-Policy</code> and related security headers. The
+        recommended setup is still a loopback <code>tcp_addr</code> behind your own TLS-terminating reverse
+        proxy.</p>
       </details>
     </section>
 

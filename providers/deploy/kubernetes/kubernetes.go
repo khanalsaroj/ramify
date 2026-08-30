@@ -49,6 +49,9 @@ type Provider struct {
 }
 
 var _ providerapi.DeployProvider = (*Provider)(nil)
+var _ providerapi.CertificateInstaller = (*Provider)(nil)
+var _ providerapi.CertificateRemover = (*Provider)(nil)
+var _ providerapi.LogFetcher = (*Provider)(nil)
 
 // New constructs a Provider backed by kubectl. Authentication and cluster
 // selection are delegated to kubeconfig, the active context, and standard kubectl
@@ -325,6 +328,17 @@ data:
 `, name, base64.StdEncoding.EncodeToString(certificatePEM), base64.StdEncoding.EncodeToString(privateKeyPEM))
 	if _, err := p.runner.Run(ctx, []string{"apply", "-n", p.namespace, "-f", "-"}, manifest); err != nil {
 		return fmt.Errorf("kubernetes: install certificate %s: %w", domain, err)
+	}
+	return nil
+}
+
+// RemoveCertificate deletes the TLS Secret InstallCertificate created for domain.
+// --ignore-not-found makes removing an already-absent Secret a no-op, matching the
+// idempotent-teardown requirement on Destroy.
+func (p *Provider) RemoveCertificate(ctx context.Context, domain string) error {
+	name := tlsSecretName(domain)
+	if _, err := p.runner.Run(ctx, []string{"delete", "secret", name, "-n", p.namespace, "--ignore-not-found"}, ""); err != nil {
+		return fmt.Errorf("kubernetes: remove certificate %s: %w", domain, err)
 	}
 	return nil
 }

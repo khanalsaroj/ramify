@@ -19,6 +19,16 @@ server:
   # token below.
   tcp_addr: ""
   tcp_token: ""
+  # If tcp_addr is set to anything other than a loopback address (127.0.0.1,
+  # ::1, localhost), Ramify requires either TLS (the two fields below) or the
+  # explicit override further down — otherwise the bearer token and every
+  # environment API response would be sent in the clear.
+  tcp_tls_cert_file: ""
+  tcp_tls_key_file: ""
+  # Explicit, clearly-named opt-out: binds a non-loopback tcp_addr without TLS.
+  # Only ever appropriate when a trusted reverse proxy in front of Ramify is
+  # already terminating TLS.
+  tcp_insecure_allow_remote: false
 
 store:
   path: /var/lib/ramify/ramify.db
@@ -29,6 +39,10 @@ reaper:
   # TTL applied to a new environment unless overridden per-environment.
   default_ttl: 72h
   event_retention: 720h
+  # How many due durable events (webhook/apply/destroy) are processed at once.
+  # Events for the same project/branch always run one at a time regardless of
+  # this value; it only bounds how much cross-branch work runs concurrently.
+  event_concurrency: 8
 
 git:
   # Supported values: github, gitlab, bitbucket.
@@ -48,6 +62,22 @@ deploy:
   ssh_addr: deploy-host.example.com:22
   ssh_user: ramify
   ssh_private_key_path: /etc/ramify/deploy_key
+  # Verifies the deploy host's SSH key against an OpenSSH-format known_hosts
+  # file. Required unless ssh_insecure_skip_host_key_verify is explicitly set
+  # below: without either, Ramify would connect to whatever host answers on
+  # ssh_addr with no way to detect impersonation. Generate one with
+  # `ssh-keyscan -H deploy-host.example.com >> known_hosts`, after verifying
+  # the fingerprint out of band.
+  ssh_known_hosts_path: /etc/ramify/known_hosts
+  # Explicit, clearly-named opt-out for ssh_known_hosts_path. Only ever safe
+  # for a throwaway/local test host.
+  ssh_insecure_skip_host_key_verify: false
+  # How long Apply waits for the deploy provider's health check to report
+  # healthy before treating the attempt as failed (it then retries with
+  # Ramify's normal backoff). Leave both at zero to use the built-in defaults
+  # (2m timeout, 2s poll interval).
+  readiness_timeout: 0
+  readiness_poll_interval: 0
   # Path to the docker-compose.yml on the deploy host, run with
   # IMAGE_TAG=<artifact ref> and COMPOSE_PROJECT_NAME=<per-environment name>.
   compose_file: /srv/ramify/docker-compose.yml
@@ -80,12 +110,15 @@ dns:
   zone_id: ""
 
 filter:
-  # Which webhook events are allowed to create an environment. Omit this whole
-  # block to deploy every branch push, which is the behavior Ramify had before
-  # these rules existed.
+  # Which webhook events are allowed to create an environment. Recommended
+  # starting point below is pr_only plus a finite max_concurrent_envs, so a
+  # fresh install doesn't spin up a preview (and spend provider/DNS/ACME
+  # resources) for every branch push, including throwaway and bot branches. Set
+  # pr_only: false and max_concurrent_envs: 0 to restore the original
+  # deploy-everything, unlimited behavior.
   #
   # Only deploy branches that have an open pull/merge request.
-  pr_only: false
+  pr_only: true
   # Branch glob patterns, following the same convention as GitHub Actions branch
   # filters: "*" does not cross a slash, "**" does. So "dependabot/*" does NOT
   # match "dependabot/npm/lodash" -- use "dependabot/**" for that.
@@ -103,7 +136,7 @@ filter:
   # a push for a NEW environment is skipped and logged; pushes to environments
   # that already exist still deploy, so nothing already live goes stale. Nothing
   # is ever evicted to make room. 0 means unlimited.
-  max_concurrent_envs: 0
+  max_concurrent_envs: 10
 
 acme:
   email: ops@example.com

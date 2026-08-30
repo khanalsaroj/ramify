@@ -382,7 +382,7 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusConflict, "environment has no deployment")
 		return
 	}
-	fetcher, ok := s.deploy.(LogFetcher)
+	fetcher, ok := s.deploy.(providerapi.LogFetcher)
 	if !ok {
 		s.writeError(w, http.StatusNotImplemented, "the configured deploy provider does not support log retrieval")
 		return

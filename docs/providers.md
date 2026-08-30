@@ -15,6 +15,24 @@ one or more of those.
 | `CertificateProvider` | `providers/cert/acme` (Let's Encrypt via DNS-01) |
 | `NotifierProvider` | `providers/notify/prcomment` |
 
+A `DeployProvider` can also optionally implement one or more named
+capabilities from `providers/providerapi/capabilities.go` —
+`CertificateInstaller` (`InstallCertificate`), `CertificateRemover`
+(`RemoveCertificate`), and `LogFetcher` (`Logs`). The core checks for these via
+a type assertion against the named interface rather than requiring every
+deploy target to support certificate installation or log retrieval; both
+built-in deploy providers implement all three. `RemoveCertificate` is called
+during teardown right after `RevokeCertificate`, so a destroyed environment
+doesn't leave its TLS private key material (a Kubernetes Secret, or files on
+the Compose host) behind. If `deploy.certificate_dir` is set but the
+configured provider doesn't implement `CertificateInstaller`, `ramifyd` fails
+at startup rather than silently never installing a certificate.
+
+`DeployProvider.HealthCheck` is not just advisory: the reconciler polls it
+after `Apply` succeeds and before DNS/certificate work starts, so an
+environment is only marked `ready` once the provider itself reports the
+deployment healthy (bounded by `deploy.readiness_timeout`, default 2m).
+
 ## The contract test suites
 
 `test/contract` holds one exported `Run*Contract` function per interface —
@@ -173,7 +191,11 @@ func TestComposeContractLive(t *testing.T) {
 
 Point this at a disposable host (or the same `test/e2e` fake-`docker`-shim sshd
 image, run standalone) — the contract suite really does run `docker compose up`
-and `down` against whatever `compose_file` you configure.
+and `down` against whatever `compose_file` you configure. Note
+`ssh.InsecureIgnoreHostKey()` above is test-only, matching what `ramifyd`'s own
+`doctor` command uses for its connectivity check; `ramifyd` itself refuses to
+run compose deployments with it; build a real callback from
+`deploy.ssh_known_hosts_path` via `golang.org/x/crypto/ssh/knownhosts` instead.
 
 ### Kubernetes
 

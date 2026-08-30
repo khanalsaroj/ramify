@@ -109,6 +109,12 @@ certificate. That is expected on a fresh preview, not a failure.
 so a slept environment keeps its DNS record and its certificate. Compose has no
 equivalent and returns an error for both.
 
+**Destroy also removes the installed TLS material**, not just the DNS record
+and ACME certificate: Kubernetes deletes the `ramify-tls-<hash>` Secret, and
+Compose removes the certificate/key files it wrote under
+`deploy.certificate_dir` over SSH. Both operations are idempotent
+(`--ignore-not-found`, `rm -f`), consistent with the rest of teardown.
+
 ## Setup, start to finish
 
 ```sh
@@ -191,6 +197,10 @@ base_domain: preview.example.com     # feature-x -> feature-x.preview.example.co
 
 server:
   socket_path: /var/run/ramify/ramify.sock
+  # tcp_addr: 0.0.0.0:8443           # optional remote control API + dashboard
+  # tcp_token: $RAMIFY_TCP_TOKEN
+  # tcp_tls_cert_file: /etc/ramify/tls/cert.pem   # required unless tcp_addr is loopback
+  # tcp_tls_key_file: /etc/ramify/tls/key.pem     # or tcp_insecure_allow_remote: true
 store:
   path: /var/lib/ramify/ramify.db
 
@@ -198,6 +208,7 @@ reaper:
   interval: 5m                       # how often expiry is enforced
   default_ttl: 72h                   # refreshed on every successful apply
   event_retention: 720h              # how long completed events are kept
+  event_concurrency: 8                # max events replayed in parallel (0 uses the default)
 
 git:
   provider: github                   # github | gitlab | bitbucket
@@ -211,8 +222,11 @@ deploy:
   ssh_user: ramify                   # default
   ssh_private_key_path: /etc/ramify/deploy_key
   ssh_known_hosts_path: /etc/ramify/known_hosts
+  # ssh_insecure_skip_host_key_verify: true   # only if you truly can't pin a host key
   compose_file: /srv/ramify/docker-compose.yml
   dns_target: 203.0.113.10
+  readiness_timeout: 0               # 0 uses the built-in default (2m)
+  readiness_poll_interval: 0         # 0 uses the built-in default (2s)
 
 dns:
   provider: cloudflare               # cloudflare | route53 | googlecloud | digitalocean
@@ -245,16 +259,30 @@ without all of these: `base_domain`, `server.socket_path`, `store.path`,
 
 | Condition                                    | Additionally required                                                   |
 |----------------------------------------------|-------------------------------------------------------------------------|
-| `deploy.provider: compose`                   | `deploy.ssh_addr`, `deploy.compose_file`, `deploy.ssh_private_key_path`, `deploy.certificate_dir` |
+| `deploy.provider: compose`                   | `deploy.ssh_addr`, `deploy.compose_file`, `deploy.ssh_private_key_path`, `deploy.certificate_dir`, `deploy.ssh_known_hosts_path` (or explicit `deploy.ssh_insecure_skip_host_key_verify: true`) |
 | `deploy.provider: kubernetes`                | `deploy.kubernetes_namespace`                                           |
 | `dns.provider: cloudflare` or `digitalocean` | `dns.api_token` (Cloudflare also accepts `dns.cloudflare_api_token`)     |
 | `dns.provider: googlecloud`                  | `dns.project`, `dns.zone_id`                                            |
-| `server.tcp_addr` set                        | `server.tcp_token`                                                      |
+| `server.tcp_addr` set                        | `server.tcp_token`, and either `server.tcp_tls_cert_file`+`tcp_tls_key_file`, a loopback `tcp_addr`, or explicit `server.tcp_insecure_allow_remote: true` |
 
 `deploy.certificate_dir` is required for Compose rather than optional: SSH is
 the only route TLS material has to that host, so without it every apply obtains
 a certificate and then fails installing it, five retries deep. Kubernetes does
 not use it — it installs certificates as Secrets.
+
+`deploy.ssh_known_hosts_path` is required for Compose for the same fail-closed
+reason: without a pinned host key, SSH host-key verification has nothing safe
+to fall back to, so `ramifyd` refuses to start rather than silently accepting
+any host key. Set `ssh_insecure_skip_host_key_verify: true` only if you have
+another way to guarantee you're talking to the right host (e.g. a private
+network with no possibility of MITM).
+
+Similarly, a non-loopback `server.tcp_addr` refuses to start without TLS
+(`tcp_tls_cert_file` + `tcp_tls_key_file`) or an explicit
+`tcp_insecure_allow_remote: true` override — plaintext bearer-token auth over
+a network is a credential leak waiting to happen. A loopback `tcp_addr`
+(`127.0.0.1:...`, `::1:...`, `localhost:...`) is exempt, since it never leaves
+the host.
 
 Route 53 and Google Cloud DNS need no token in the file: they use the AWS SDK
 credential chain and Application Default Credentials respectively. For Route 53
@@ -310,6 +338,14 @@ Statuses: `pending` → `deploying` → `ready`, or `failed`. Teardown runs
 back. The store enforces this as a transition graph and rejects any jump that
 isn't an edge in it, so a test or a caller cannot move an environment straight
 from `pending` to `ready`.
+
+**An environment isn't marked `ready` on a successful `Apply` alone.** After
+the deploy provider reports success, the reconciler polls `HealthCheck` (every
+`deploy.readiness_poll_interval`, default 2s) until it reports healthy or
+`deploy.readiness_timeout` (default 2m) elapses — only then does DNS get
+created and the certificate installed. A readiness timeout is just another
+apply failure: it counts against the 5-attempt retry budget below rather than
+leaving a half-healthy environment announced as ready.
 
 Sleep and wake are operator-driven only: `/sleep` and `/wake` are exposed on the
 control API and the dashboard, but **automatic idle-detection is not
@@ -439,8 +475,9 @@ DNS records Ramify creates are tagged with a companion TXT ownership record
    come from ambient chains), the deploy target (SSH reachability + auth for
    Compose, `kubectl get namespace` for Kubernetes), webhook secret length
    (must be ≥ 16 chars), and ACME directory reachability. Note it dials SSH
-   with host-key verification disabled — that check is connectivity only, and it
-   warns if `ssh_known_hosts_path` is unset, which *does* matter in production.
+   with host-key verification disabled for that one connectivity check — this
+   is separate from `ramifyd` itself, which now refuses to start for Compose
+   unless `ssh_known_hosts_path` is set or the insecure override is explicit.
 2. **`ramify logs <branch>`** for the container's own output.
 3. **`ramifyd` logs are structured JSON.** Set `RAMIFY_LOG_FORMAT=text` for
    human-readable output (also the default when attached to a terminal).
@@ -451,7 +488,9 @@ Symptom → cause:
 |----------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | Webhook returns 401                    | `git.webhook_secret` differs from the secret configured on the repository webhook, or is empty (an empty secret rejects everything)                                                                                |
 | Webhook 200 but nothing happens        | Event isn't one Ramify handles (e.g. a PR `labeled` action, or a tag push)                                                                                                                                        |
-| Environment stuck `failed`             | Apply exhausted its 5 attempts — read `ramifyd` logs for which provider failed                                                                                                                                    |
+| Environment stuck `failed`             | Apply exhausted its 5 attempts — read `ramifyd` logs for which provider failed, including a `readiness check` / `readiness timed out` error if the container/pod never became healthy                           |
+| `ramifyd` won't start: `deploy.ssh_known_hosts_path (or explicit ...)` | Compose requires a pinned host key by default — set `ssh_known_hosts_path` or, only if you understand the tradeoff, `ssh_insecure_skip_host_key_verify: true`                                    |
+| `ramifyd` won't start: `server.tcp_tls_cert_file and ...` | `server.tcp_addr` is non-loopback without TLS — add `tcp_tls_cert_file`/`tcp_tls_key_file`, bind loopback and put a reverse proxy in front, or set `tcp_insecure_allow_remote: true`             |
 | Browser shows the wrong cert on a brand-new Kubernetes preview | Expected for a few seconds: the Ingress names its TLS secret before `InstallCertificate` creates it                                                                             |
 | Kubernetes deploy fails with `namespaces "ramify" not found` | Ramify does not create the namespace — create it first, or point `deploy.kubernetes_namespace` at an existing one                                                       |
 | Deploy fails pulling the image         | CI hasn't pushed an image for that commit SHA, or `${IMAGE_TAG}` isn't interpolated into a full image ref                                                                                                         |
@@ -491,6 +530,13 @@ Two things to know before exposing it:
   sends on its XHRs. Put `server.tcp_addr` on a trusted network regardless.
 - **It needs `server.tcp_addr` and `server.tcp_token` set.** With only the unix
   socket configured there is nothing for a browser to connect to.
+- **The token is kept in the browser's `localStorage`.** The transport
+  hardening above (TLS on a non-loopback `tcp_addr`, plus a `Content-Security-Policy`
+  applied to every response — `default-src 'self'`, `connect-src 'self'`, and no
+  inline frames) is the mitigation for that: it stops the token leaking over the
+  wire or exfiltrating to a third-party origin even under a script-injection
+  scenario. It does not change what a script running on the page itself could
+  read — no storage API does.
 
 ## Scope
 
@@ -510,6 +556,16 @@ implementation should be added to its suite rather than only unit-tested.
 `RunNotifierProviderContract` is deliberately thin — only "a well-formed event
 delivers without error" — since template defaults and no-op-on-zero-PR behavior
 are implementation choices, not part of the interface.
+
+Beyond the five required interfaces, a `DeployProvider` can optionally
+implement `providerapi.CertificateInstaller`, `providerapi.CertificateRemover`,
+and/or `providerapi.LogFetcher` (`providers/providerapi/capabilities.go`) —
+named interfaces the reconciler and control API check for via type assertion,
+rather than requiring every deploy target to support certificate install/log
+retrieval directly. Compose and Kubernetes both implement all three. If
+`deploy.certificate_dir` is set but the configured deploy provider doesn't
+implement `CertificateInstaller`, `ramifyd` fails at startup instead of
+silently never installing a certificate.
 
 Still deliberately out of scope: image building, per-hostname routing,
 idle-detection driving automatic sleep, *evicting* an environment to make room

@@ -19,8 +19,9 @@ import (
 	"github.com/khanalsaroj/ramify/providers/providerapi"
 )
 
-// maxApplyAttempts is the maximum number of times Apply tries the deploy/DNS/cert
-// sequence before giving up and marking the environment failed.
+// maxApplyAttempts is the maximum number of times Apply tries the
+// deploy/readiness/DNS/cert sequence before giving up and marking the
+// environment failed.
 const maxApplyAttempts = 5
 
 // maxEventAttempts caps durable retries of a single inbox event. Past this the
@@ -28,6 +29,20 @@ const maxApplyAttempts = 5
 // event cannot occupy the worker indefinitely or hide behind an ever-growing
 // backoff.
 const maxEventAttempts = 10
+
+// defaultReadinessTimeout and defaultReadinessPollInterval bound how long
+// attemptApply waits for a freshly deployed environment to report healthy
+// before treating the attempt as failed. They apply whenever a Reconciler is
+// constructed without WithReadiness.
+const (
+	defaultReadinessTimeout      = 2 * time.Minute
+	defaultReadinessPollInterval = 2 * time.Second
+)
+
+// defaultMaxEventWorkers bounds how many due events ReplayEvents processes
+// concurrently when the Reconciler is constructed without
+// WithEventConcurrency.
+const defaultMaxEventWorkers = 8
 
 // Reconciler drives preview environments toward their desired state using the
 // providerapi interfaces. It never executes a build: DeployProvider.Apply only ever
@@ -63,11 +78,24 @@ type Reconciler struct {
 	admissionMu sync.Mutex
 
 	logger *slog.Logger
-	locks  sync.Map // project/branch -> *sync.Mutex
+	locks  *keyedMutex
 
 	// jitter randomizes a computed retry delay. It is a field so tests can make
 	// backoff deterministic; production uses fullJitter.
 	jitter func(time.Duration) time.Duration
+
+	// readinessTimeout and readinessPollInterval bound how long attemptApply
+	// waits for HealthCheck to report healthy after deploy.Apply succeeds and
+	// before DNS/certificate/notification, so a deployment that never comes up
+	// is never published as ready. Set via WithReadiness; defaulted in
+	// NewReconciler otherwise.
+	readinessTimeout      time.Duration
+	readinessPollInterval time.Duration
+
+	// maxEventWorkers bounds how many due events ReplayEvents processes
+	// concurrently. Set via WithEventConcurrency; defaulted in NewReconciler
+	// otherwise.
+	maxEventWorkers int
 }
 
 // NewReconciler constructs a Reconciler. All dependencies are passed in explicitly;
@@ -88,16 +116,20 @@ func NewReconciler(
 		logger = slog.Default()
 	}
 	r := &Reconciler{
-		store:      st,
-		deploy:     deploy,
-		dns:        dns,
-		cert:       cert,
-		notify:     notify,
-		clock:      clock,
-		baseDomain: baseDomain,
-		defaultTTL: defaultTTL,
-		logger:     logger,
-		jitter:     fullJitter,
+		store:                 st,
+		deploy:                deploy,
+		dns:                   dns,
+		cert:                  cert,
+		notify:                notify,
+		clock:                 clock,
+		baseDomain:            baseDomain,
+		defaultTTL:            defaultTTL,
+		logger:                logger,
+		locks:                 newKeyedMutex(),
+		jitter:                fullJitter,
+		readinessTimeout:      defaultReadinessTimeout,
+		readinessPollInterval: defaultReadinessPollInterval,
+		maxEventWorkers:       defaultMaxEventWorkers,
 	}
 	for _, opt := range opts {
 		opt(r)
@@ -116,6 +148,31 @@ func WithAdmission(p policy.Policy, maxConcurrent int) Option {
 	return func(r *Reconciler) {
 		r.policy = p
 		r.maxConcurrent = maxConcurrent
+	}
+}
+
+// WithReadiness overrides how long attemptApply waits for a freshly deployed
+// environment's HealthCheck to report healthy, and how often it polls. Values
+// less than or equal to zero are ignored, keeping the built-in default.
+func WithReadiness(timeout, pollInterval time.Duration) Option {
+	return func(r *Reconciler) {
+		if timeout > 0 {
+			r.readinessTimeout = timeout
+		}
+		if pollInterval > 0 {
+			r.readinessPollInterval = pollInterval
+		}
+	}
+}
+
+// WithEventConcurrency overrides how many due events ReplayEvents processes
+// concurrently. A value less than or equal to zero is ignored, keeping the
+// built-in default.
+func WithEventConcurrency(maxWorkers int) Option {
+	return func(r *Reconciler) {
+		if maxWorkers > 0 {
+			r.maxEventWorkers = maxWorkers
+		}
 	}
 }
 
@@ -224,10 +281,7 @@ func (r *Reconciler) admit(ctx context.Context, ev providerapi.Event, req ApplyR
 
 func (r *Reconciler) lock(project, branch string) func() {
 	key := project + "\x00" + branch
-	value, _ := r.locks.LoadOrStore(key, &sync.Mutex{})
-	mu := value.(*sync.Mutex)
-	mu.Lock()
-	return mu.Unlock
+	return r.locks.Lock(key)
 }
 
 // ProcessWebhookEvent applies or destroys the desired environment represented
@@ -298,7 +352,7 @@ func (r *Reconciler) upsertPendingEnvironment(ctx context.Context, req ApplyRequ
 	return env, nil
 }
 
-// doApply drives the deploy -> DNS -> certificate sequence for env/req, retrying
+// doApply drives the deploy -> readiness -> DNS -> certificate sequence for env/req, retrying
 // with capped exponential backoff up to maxApplyAttempts before marking the
 // environment failed and notifying.
 func (r *Reconciler) doApply(ctx context.Context, env store.Environment, req ApplyRequest) (store.Environment, error) {
@@ -345,7 +399,8 @@ func (r *Reconciler) doApply(ctx context.Context, env store.Environment, req App
 	return store.Environment{}, fmt.Errorf("apply failed after %d attempts: %w", maxApplyAttempts, lastErr)
 }
 
-// attemptApply runs a single deploy -> DNS -> certificate -> persist attempt.
+// attemptApply runs a single deploy -> readiness -> DNS -> certificate -> persist
+// attempt.
 func (r *Reconciler) attemptApply(ctx context.Context, env store.Environment, req ApplyRequest, fqdn, tag string) (store.Environment, error) {
 	deployment, err := r.deploy.Apply(ctx, providerapi.EnvSpec{
 		Project:     req.Project,
@@ -358,6 +413,10 @@ func (r *Reconciler) attemptApply(ctx context.Context, env store.Environment, re
 		return env, fmt.Errorf("deploy apply: %w", err)
 	}
 
+	if err := r.waitUntilHealthy(ctx, deployment.Ref); err != nil {
+		return env, fmt.Errorf("readiness check: %w", err)
+	}
+
 	rec := providerapi.DNSRecord{Zone: r.baseDomain, Name: fqdn, Type: "A", Value: deployment.InternalAddr, OwnershipTag: tag}
 	if err := r.dns.EnsureRecord(ctx, rec); err != nil {
 		return env, fmt.Errorf("dns ensure record: %w", err)
@@ -367,9 +426,7 @@ func (r *Reconciler) attemptApply(ctx context.Context, env store.Environment, re
 	if err != nil {
 		return env, fmt.Errorf("ensure certificate: %w", err)
 	}
-	if installer, ok := r.deploy.(interface {
-		InstallCertificate(context.Context, string, []byte, []byte) error
-	}); ok && len(certRef.CertificatePEM) > 0 && len(certRef.PrivateKeyPEM) > 0 {
+	if installer, ok := r.deploy.(providerapi.CertificateInstaller); ok && len(certRef.CertificatePEM) > 0 && len(certRef.PrivateKeyPEM) > 0 {
 		if err := installer.InstallCertificate(ctx, fqdn, certRef.CertificatePEM, certRef.PrivateKeyPEM); err != nil {
 			return env, fmt.Errorf("install certificate: %w", err)
 		}
@@ -390,6 +447,34 @@ func (r *Reconciler) attemptApply(ctx context.Context, env store.Environment, re
 		return env, fmt.Errorf("marking environment ready: %w", err)
 	}
 	return env, nil
+}
+
+// waitUntilHealthy polls the deploy provider's HealthCheck for ref until it
+// reports healthy or r.readinessTimeout elapses, whichever comes first. This is
+// what keeps Apply from publishing DNS/TLS and notifying "ready" for a
+// deployment whose containers or pods are still starting or crash-looping: a
+// timeout here is just another attemptApply failure, so it flows through the
+// existing retry/backoff and dead-letter machinery like any other step.
+func (r *Reconciler) waitUntilHealthy(ctx context.Context, ref string) error {
+	deadline := r.clock.Now().Add(r.readinessTimeout)
+	var lastDetail string
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		status, err := r.deploy.HealthCheck(ctx, ref)
+		if err != nil {
+			return fmt.Errorf("health check: %w", err)
+		}
+		if status.Healthy {
+			return nil
+		}
+		lastDetail = status.Detail
+		if !r.clock.Now().Before(deadline) {
+			return fmt.Errorf("readiness timed out after %s: %s", r.readinessTimeout, lastDetail)
+		}
+		r.clock.Sleep(r.readinessPollInterval)
+	}
 }
 
 // recordDNSRow persists a dns_records row for rec if one doesn't already exist for
@@ -498,6 +583,11 @@ func (r *Reconciler) doDestroy(ctx context.Context, env store.Environment) error
 	if err := r.cert.RevokeCertificate(ctx, r.fqdn(env.Subdomain)); err != nil {
 		return fmt.Errorf("revoking certificate: %w", err)
 	}
+	if remover, ok := r.deploy.(providerapi.CertificateRemover); ok {
+		if err := remover.RemoveCertificate(ctx, r.fqdn(env.Subdomain)); err != nil {
+			return fmt.Errorf("removing deployed certificate: %w", err)
+		}
+	}
 
 	if env.DeployRef != "" {
 		if err := r.deploy.Destroy(ctx, env.DeployRef); err != nil {
@@ -527,12 +617,25 @@ func (r *Reconciler) ReplayUnprocessedEvents(ctx context.Context) error {
 	return r.ReplayEvents(ctx, events)
 }
 
-// ReplayEvents processes a supplied batch of due durable events. It is used by
-// startup recovery and the long-running daemon worker.
+// ReplayEvents processes a supplied batch of due durable events, up to
+// r.maxEventWorkers at a time. It is used by startup recovery and the
+// long-running daemon worker. Events for the same project/branch still run one
+// at a time — r.lock serializes them — so this only adds cross-branch
+// parallelism, capped rather than unbounded, so one slow or hung provider call
+// cannot stall every other due event behind it.
 func (r *Reconciler) ReplayEvents(ctx context.Context, events []store.Event) error {
+	sem := make(chan struct{}, r.maxEventWorkers)
+	var wg sync.WaitGroup
 	for _, ev := range events {
-		r.replayOne(ctx, ev)
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(ev store.Event) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			r.replayOne(ctx, ev)
+		}(ev)
 	}
+	wg.Wait()
 	return nil
 }
 

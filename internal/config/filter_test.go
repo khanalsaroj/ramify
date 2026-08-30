@@ -32,6 +32,7 @@ deploy:
   provider: compose
   ssh_addr: host:22
   ssh_private_key_path: /etc/ramify/key
+  ssh_known_hosts_path: /etc/ramify/known_hosts
   compose_file: /srv/compose.yml
   dns_target: 203.0.113.10
   certificate_dir: /srv/ramify/certificates
@@ -100,4 +101,43 @@ filter:
 `))
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "max_concurrent_envs")
+}
+
+// Leaving both the known_hosts path and the insecure override unset would mean
+// Ramify connects to whatever host answers on ssh_addr with no way to detect
+// impersonation.
+func TestComposeRequiresKnownHostsOrInsecureOverride(t *testing.T) {
+	body := strings.Replace(baseConfig, "  ssh_known_hosts_path: /etc/ramify/known_hosts\n", "", 1)
+	_, err := Load(writeConfig(t, body))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "deploy.ssh_known_hosts_path")
+}
+
+// The explicit, clearly-named override lets an operator who understands the
+// risk skip host key verification instead of it silently happening by default.
+func TestComposeAllowsExplicitInsecureHostKeyOverride(t *testing.T) {
+	body := strings.Replace(baseConfig, "  ssh_addr: host:22\n", "  ssh_addr: host:22\n  ssh_insecure_skip_host_key_verify: true\n", 1)
+	_, err := Load(writeConfig(t, body))
+	require.NoError(t, err)
+}
+
+// A non-loopback tcp_addr with no TLS configured would send the bearer token
+// and every environment API response in the clear.
+func TestServerTCPRequiresTLSOrLoopbackOrOverride(t *testing.T) {
+	body := strings.Replace(baseConfig, "  socket_path: /var/run/ramify/ramify.sock\n", "  socket_path: /var/run/ramify/ramify.sock\n  tcp_addr: 0.0.0.0:9443\n  tcp_token: secret-token\n", 1)
+	_, err := Load(writeConfig(t, body))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "server.tcp_tls_cert_file")
+}
+
+func TestServerTCPAllowsLoopbackWithoutTLS(t *testing.T) {
+	body := strings.Replace(baseConfig, "  socket_path: /var/run/ramify/ramify.sock\n", "  socket_path: /var/run/ramify/ramify.sock\n  tcp_addr: 127.0.0.1:9443\n  tcp_token: secret-token\n", 1)
+	_, err := Load(writeConfig(t, body))
+	require.NoError(t, err)
+}
+
+func TestServerTCPAllowsExplicitInsecureRemoteOverride(t *testing.T) {
+	body := strings.Replace(baseConfig, "  socket_path: /var/run/ramify/ramify.sock\n", "  socket_path: /var/run/ramify/ramify.sock\n  tcp_addr: 0.0.0.0:9443\n  tcp_token: secret-token\n  tcp_insecure_allow_remote: true\n", 1)
+	_, err := Load(writeConfig(t, body))
+	require.NoError(t, err)
 }
