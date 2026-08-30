@@ -37,7 +37,7 @@ import (
 	"github.com/khanalsaroj/ramify/providers/git/bitbucket"
 	"github.com/khanalsaroj/ramify/providers/git/github"
 	"github.com/khanalsaroj/ramify/providers/git/gitlab"
-	"github.com/khanalsaroj/ramify/providers/notify/githubcomment"
+	"github.com/khanalsaroj/ramify/providers/notify/prcomment"
 	"github.com/khanalsaroj/ramify/providers/providerapi"
 )
 
@@ -125,7 +125,7 @@ func run(configPath string, logger *slog.Logger) error {
 		return fmt.Errorf("constructing acme provider: %w", err)
 	}
 
-	notifyProvider, err := githubcomment.New(gitProvider, cfg.Notify.CommentTemplates)
+	notifyProvider, err := prcomment.New(gitProvider, cfg.Notify.CommentTemplates)
 	if err != nil {
 		return fmt.Errorf("constructing notifier: %w", err)
 	}

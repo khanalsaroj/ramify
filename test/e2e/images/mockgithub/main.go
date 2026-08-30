@@ -1,6 +1,6 @@
 // Command mockgithub is a minimal stand-in for the GitHub REST API, used only by
 // the e2e harness: it records issue/PR comments so the test can assert
-// providers/notify/githubcomment actually posted one.
+// providers/notify/prcomment actually posted one.
 //
 // It implements the three calls UpsertPreviewComment makes, not just the create:
 // listing is how that function finds an existing Ramify-owned comment to update,

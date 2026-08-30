@@ -303,7 +303,7 @@ providers/git/            GitProvider — GitHub, GitLab, Bitbucket webhooks + c
 providers/deploy/           DeployProvider — SSH + docker compose or Kubernetes
 providers/dns/             DNSProvider — Cloudflare, Route 53, Google Cloud DNS, DigitalOcean
 providers/cert/acme/       CertificateProvider — Let's Encrypt via DNS-01
-providers/notify/githubcomment/  NotifierProvider — PR status comments
+providers/notify/prcomment/  NotifierProvider — PR/MR status comments (GitHub, GitLab, Bitbucket)
 test/contract/      shared behavioral suites every provider implementation must pass
 test/fakes/          in-memory fakes used by unit tests
 test/e2e/             Docker-based end-to-end harness (Pebble, CoreDNS, mock GitHub)

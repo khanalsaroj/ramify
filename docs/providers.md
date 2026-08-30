@@ -13,16 +13,20 @@ one or more of those.
 | `DeployProvider` | `providers/deploy/compose` (SSH + `docker compose`), `providers/deploy/kubernetes` (`kubectl`) |
 | `DNSProvider` | `providers/dns/cloudflare`, `providers/dns/route53`, `providers/dns/googlecloud`, `providers/dns/digitalocean` |
 | `CertificateProvider` | `providers/cert/acme` (Let's Encrypt via DNS-01) |
-| `NotifierProvider` | `providers/notify/githubcomment` |
+| `NotifierProvider` | `providers/notify/prcomment` |
 
 ## The contract test suites
 
 `test/contract` holds one exported `Run*Contract` function per interface —
-`RunDeployProviderContract`, `RunDNSProviderContract`, `RunGitProviderContract` —
-each expressing the minimum behavior *any* implementation of that interface must
-satisfy (built-in or a future third-party one): idempotent create/update, correct
-teardown, and — for `DNSProvider` — that deleting a record you don't own is
-rejected, not silently skipped.
+`RunDeployProviderContract`, `RunDNSProviderContract`, `RunGitProviderContract`,
+`RunCertificateProviderContract`, `RunNotifierProviderContract` — each expressing
+the minimum behavior *any* implementation of that interface must satisfy (built-in
+or a future third-party one): idempotent create/update, correct teardown, and —
+for `DNSProvider` — that deleting a record you don't own is rejected, not silently
+skipped. `RunNotifierProviderContract` is deliberately thin (a well-formed event
+must deliver without error) since most of what a notifier does — which
+`NotifyEvent.Kind`s have default templates, whether a zero `prNumber` is a no-op —
+is implementation choice, not part of the interface's contract.
 
 Every built-in provider's own test file (`providers/*/*/*.go`'s `_test.go`
 counterpart) runs the relevant contract suite. In CI, none of them touch a real
@@ -37,8 +41,13 @@ against a small in-memory test double standing in for the network:
 - `providers/cert/acme`: not run against a fake CA — `lego.NewClient` dials the
   ACME directory as part of construction, so there's no clean seam for a fake at
   the unit level. The DNS-01 challenge adapter and certificate-parsing helper are
-  unit tested directly; the full issue/revoke flow against a real CA (Pebble) is
-  covered by `test/e2e` instead.
+  unit tested directly; `RunCertificateProviderContract` itself runs in
+  `test/e2e/cert_contract_test.go` against the real ACME provider talking to
+  Pebble, since that's the only account this contract can run against.
+- `providers/notify/prcomment`: `RunNotifierProviderContract` runs in
+  `providers/notify/prcomment/prcomment_test.go` against the real `Provider` wired
+  to `test/fakes`' in-memory `GitProvider` — there's no real-account run for it,
+  for the same reason `CommentOnPR` has none below.
 
 ## Running the contract suite against a real account
 

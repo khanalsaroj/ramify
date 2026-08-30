@@ -130,7 +130,7 @@ type FilterConfig struct {
 	MaxConcurrentEnvs int `yaml:"max_concurrent_envs"`
 }
 
-// NotifyConfig configures providers/notify/githubcomment. CommentTemplates maps a
+// NotifyConfig configures providers/notify/prcomment. CommentTemplates maps a
 // providerapi.NotifyEvent.Kind ("ready", "updated", "failed", "expiring",
 // "destroyed") to a Go text/template string executed against that NotifyEvent. Any
 // kind not present here falls back to a built-in default template.

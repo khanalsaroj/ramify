@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-package githubcomment
+package prcomment
 
 import (
 	"context"
@@ -9,8 +9,17 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/khanalsaroj/ramify/providers/providerapi"
+	"github.com/khanalsaroj/ramify/test/contract"
 	"github.com/khanalsaroj/ramify/test/fakes"
 )
+
+func TestNotifierProviderContract(t *testing.T) {
+	git := fakes.NewGitProvider()
+	p, err := New(git, nil)
+	require.NoError(t, err)
+
+	contract.RunNotifierProviderContract(t, p, "acme/web")
+}
 
 func TestNotifyRendersDefaultTemplateAndComments(t *testing.T) {
 	git := fakes.NewGitProvider()

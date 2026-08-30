@@ -38,7 +38,7 @@ import (
 	"github.com/khanalsaroj/ramify/providers/cert/acme"
 	"github.com/khanalsaroj/ramify/providers/deploy/compose"
 	"github.com/khanalsaroj/ramify/providers/git/github"
-	"github.com/khanalsaroj/ramify/providers/notify/githubcomment"
+	"github.com/khanalsaroj/ramify/providers/notify/prcomment"
 	"github.com/khanalsaroj/ramify/test/e2e/dnsfile"
 )
 
@@ -245,7 +245,7 @@ func TestFullLifecycle(t *testing.T) {
 	ghClient.BaseURL = baseURL
 	gitProvider := github.New(ghClient, e.webhookSecret)
 
-	notifyProvider, err := githubcomment.New(gitProvider, nil)
+	notifyProvider, err := prcomment.New(gitProvider, nil)
 	require.NoError(t, err)
 
 	st, err := store.Open(ctx, ":memory:")

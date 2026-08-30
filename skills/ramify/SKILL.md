@@ -494,20 +494,27 @@ Two things to know before exposing it:
 
 ## Scope
 
-Built-in providers: GitHub, GitLab, and Bitbucket (webhooks + PR comments);
+Built-in providers: GitHub, GitLab, and Bitbucket (webhooks + PR/MR comments);
 Compose over SSH and Kubernetes via kubectl; Cloudflare, Route 53, Google Cloud,
-and DigitalOcean DNS; ACME/Let's Encrypt via DNS-01. Adding another means
+and DigitalOcean DNS; ACME/Let's Encrypt via DNS-01. `providers/notify/prcomment`
+is the one built-in `NotifierProvider` — it's generic over any `GitProvider`
+(`CommentOnPR`/`UpsertPreviewComment`), so it already posts comments on GitHub,
+GitLab, or Bitbucket, whichever `git:` is configured; it isn't GitHub-specific
+despite older docs/history saying "githubcomment". Adding another provider means
 implementing one of the five interfaces in `providers/providerapi` and wiring it
-into `ramifyd` startup. `test/contract` has shared contract suites for the
-Deploy, DNS, and Git provider interfaces (`deploy.go`, `dns.go`, `git.go`) — a
-new implementation of one of those three should be added to its suite rather
-than only unit-tested. The Cert and Notify interfaces have no contract suite
-yet, so those are unit-tested only.
+into `ramifyd` startup. `test/contract` has shared contract suites for all five
+interfaces (`deploy.go`, `dns.go`, `git.go`, `cert.go`, `notify.go`) — a new
+implementation should be added to its suite rather than only unit-tested.
+`RunCertificateProviderContract` only runs against a real account
+(`test/e2e/cert_contract_test.go`, against Pebble) since ACME has no fake seam;
+`RunNotifierProviderContract` is deliberately thin — only "a well-formed event
+delivers without error" — since template defaults and no-op-on-zero-PR behavior
+are implementation choices, not part of the interface.
 
 Still deliberately out of scope: image building, per-hostname routing,
 idle-detection driving automatic sleep, *evicting* an environment to make room
 at the concurrency ceiling (Ramify rejects instead), out-of-process plugins,
-notifiers beyond PR comments, and any hosted component.
+notifiers beyond PR/MR comments (e.g. Slack/Discord), and any hosted component.
 
 ## Development
 

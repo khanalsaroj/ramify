@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// Package githubcomment implements providerapi.NotifierProvider by posting a
-// templated comment on the pull request associated with an environment.
-package githubcomment
+// Package prcomment implements providerapi.NotifierProvider by posting a
+// templated comment on the pull/merge request associated with an environment. It
+// depends only on providerapi.GitProvider.CommentOnPR (or the optional
+// UpsertPreviewComment upgrade), so it works unchanged against GitHub, GitLab, or
+// Bitbucket — whichever GitProvider ramifyd is configured with.
+package prcomment
 
 import (
 	"bytes"
@@ -50,7 +53,7 @@ func New(git providerapi.GitProvider, overrides map[string]string) (*Provider, e
 	for kind, tmplStr := range merged {
 		t, err := template.New(kind).Parse(tmplStr)
 		if err != nil {
-			return nil, fmt.Errorf("githubcomment: parsing template for %q: %w", kind, err)
+			return nil, fmt.Errorf("prcomment: parsing template for %q: %w", kind, err)
 		}
 		parsed[kind] = t
 	}
@@ -68,22 +71,22 @@ func (p *Provider) Notify(ctx context.Context, project string, prNumber int, ev 
 
 	tmpl, ok := p.templates[ev.Kind]
 	if !ok {
-		return fmt.Errorf("githubcomment: no template configured for notify kind %q", ev.Kind)
+		return fmt.Errorf("prcomment: no template configured for notify kind %q", ev.Kind)
 	}
 
 	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, ev); err != nil {
-		return fmt.Errorf("githubcomment: rendering template for %q: %w", ev.Kind, err)
+		return fmt.Errorf("prcomment: rendering template for %q: %w", ev.Kind, err)
 	}
 
 	if updater, ok := p.git.(previewCommentUpdater); ok {
 		if err := updater.UpsertPreviewComment(ctx, project, prNumber, buf.String()); err != nil {
-			return fmt.Errorf("githubcomment: notify %s#%d: %w", project, prNumber, err)
+			return fmt.Errorf("prcomment: notify %s#%d: %w", project, prNumber, err)
 		}
 		return nil
 	}
 	if err := p.git.CommentOnPR(ctx, project, prNumber, buf.String()); err != nil {
-		return fmt.Errorf("githubcomment: notify %s#%d: %w", project, prNumber, err)
+		return fmt.Errorf("prcomment: notify %s#%d: %w", project, prNumber, err)
 	}
 	return nil
 }

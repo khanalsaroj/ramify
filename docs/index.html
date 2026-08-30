@@ -708,7 +708,7 @@ sudo systemctl enable --now ramifyd</code></pre>
             <tr><td><code>DeployProvider</code></td><td><code>providers/deploy/{compose,kubernetes}</code></td><td>SSH + <code>docker compose</code> or <code>kubectl</code></td></tr>
             <tr><td><code>DNSProvider</code></td><td><code>providers/dns/{cloudflare,route53,googlecloud,digitalocean}</code></td><td>TXT ownership registry</td></tr>
             <tr><td><code>CertificateProvider</code></td><td><code>providers/cert/acme</code></td><td>Let's Encrypt via ACME DNS-01, shares the DNS provider</td></tr>
-            <tr><td><code>NotifierProvider</code></td><td><code>providers/notify/githubcomment</code></td><td>Templated PR status comments</td></tr>
+            <tr><td><code>NotifierProvider</code></td><td><code>providers/notify/prcomment</code></td><td>Templated PR/MR status comments (GitHub, GitLab, Bitbucket)</td></tr>
           </tbody>
         </table>
       </div>
