@@ -36,7 +36,8 @@ fails fast on an unknown name.
 | Cert   | (none)            | ACME/Let's Encrypt via DNS-01, the only implementation | (n/a)        |
 
 Per-provider setup, credentials, and the webhook headers each Git host sends:
-`docs/providers.md`.
+`docs/providers.md`. Health/readiness endpoints, backups, durable event
+processing, and dead-lettering: `docs/operations.md`.
 
 ## Read this first — two things Ramify does NOT do
 
@@ -196,6 +197,7 @@ store:
 reaper:
   interval: 5m                       # how often expiry is enforced
   default_ttl: 72h                   # refreshed on every successful apply
+  event_retention: 720h              # how long completed events are kept
 
 git:
   provider: github                   # github | gitlab | bitbucket
@@ -220,6 +222,14 @@ dns:
 acme:
   email: ops@example.com
   ca_dir_url: https://acme-v02.api.letsencrypt.org/directory
+  storage_dir: /var/lib/ramify/certificates
+
+notify:
+  comment_templates: {}             # override the text/template used per notify
+                                     # kind: ready|updated|failed|expiring|destroyed
+
+log:
+  format: ""                        # json (default) | text; same as RAMIFY_LOG_FORMAT
 ```
 
 A `github:` block carrying `token` and `webhook_secret` is still accepted and
@@ -257,7 +267,7 @@ Annotated reference: `ramify.example.yaml`.
 | Command                   | Key flags                                                                                                                                         | Does                                                                         |
 |---------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------|
 | `ramify install`          | `--config-dir`, `--data-dir`                                                                                                                      | Creates config/data dirs. Does **not** install binaries.                     |
-| `ramify init`             | `--output`, `--base-domain`, `--git-provider`, `--github-*`, `--deploy-provider`, `--deploy-*`, `--kubernetes-*`, `--dns-provider`, `--dns-zone`, `--cloudflare-token`, `--dns-token`, `--acme-email` | Writes `ramify.yaml` (mode 0600) non-interactively; validates before writing |
+| `ramify init`             | `--output`, `--base-domain`, `--socket-path`, `--store-path`, `--default-ttl`, `--event-retention`, `--git-provider`, `--github-*`, `--deploy-provider`, `--deploy-*`, `--kubernetes-*`, `--dns-provider`, `--dns-zone`, `--cloudflare-token`, `--dns-token`, `--acme-email` | Writes `ramify.yaml` (mode 0600) non-interactively; validates before writing |
 | `ramify list`             | `--project owner/repo`                                                                                                                            | Table: ID, PROJECT, BRANCH, STATUS, SUBDOMAIN, ARTIFACT                      |
 | `ramify status <branch>`  | `--project`                                                                                                                                       | Full detail for one environment                                              |
 | `ramify logs <branch>`    | `--project`                                                                                                                                       | Deploy logs (last 500 lines; Compose and Kubernetes both implement this)     |
@@ -281,6 +291,18 @@ Branch-taking commands resolve `<branch>` to exactly one environment. If the
 same branch name exists in several projects the command fails with
 `multiple environments match branch "x"; pass --project to disambiguate`.
 
+`GET /environments/` is paginated (`DefaultListLimit` 100, `MaxListLimit` 500,
+`X-Ramify-Next-Offset` response header); `ramify list` and `ramify status`
+follow it automatically, so a large fleet never needs manual pagination.
+
+## Health, readiness, and metrics
+
+`ramifyd` serves `/healthz` (state store is readable), `/readyz` (event store is
+available for reconciliation), and `/metrics` (Prometheus text format — webhook
+deliveries, duplicates, retries, reconciliation failures, cleanup failures,
+pending inbox work, dead-lettered events). Put these behind the same
+socket/authenticated-TCP boundary as the control API. Details: `docs/operations.md`.
+
 ## Lifecycle
 
 Statuses: `pending` → `deploying` → `ready`, or `failed`. Teardown runs
@@ -291,8 +313,8 @@ from `pending` to `ready`.
 
 Sleep and wake are operator-driven only: `/sleep` and `/wake` are exposed on the
 control API and the dashboard, but **automatic idle-detection is not
-implemented** (see `DECISIONS.md` → Deferred). Only the Kubernetes deploy
-provider can act on them.
+implemented** (see "Scope" below). Only the Kubernetes deploy provider can act
+on them.
 
 Webhook events map to actions:
 
@@ -317,13 +339,23 @@ A Bitbucket push may batch several branches into one delivery, so non-branch
 refs (tags) are skipped rather than rejected.
 
 Anything else is acknowledged with 200 and ignored. Apply retries the
-deploy/DNS/cert sequence up to **5 times** before marking the environment
-`failed`.
+deploy/DNS/cert sequence up to **5 times** in-process before marking the
+environment `failed`.
 
-**Crash safety:** every event is written to the store *before* any provider is
-called, and the webhook returns 202 immediately while work proceeds
-asynchronously. On restart `ramifyd` replays unprocessed events, so a mid-flight
-crash resumes rather than losing work. Every provider operation is idempotent.
+**Crash safety and durable events:** a webhook delivery is written to the store
+and deduplicated by the Git host's delivery ID (`X-GitHub-Delivery`,
+`X-Gitlab-Event-UUID`, `X-Hook-UUID`) *before* any provider is called; a
+delivery without one is rejected outright since it can't be deduplicated on
+redelivery. The webhook returns 202 immediately while work proceeds
+asynchronously, and on restart `ramifyd` replays unprocessed events, so a
+mid-flight crash resumes rather than losing work. Every provider operation is
+idempotent.
+
+On top of the 5-attempt apply retry above, the event itself gets a second,
+durable retry budget — up to **10 attempts** with jittered backoff — before it's
+marked dead-lettered rather than retried further. A pending event means the
+desired state hasn't been confirmed yet; check `/metrics` and `ramifyd`'s logs
+before touching provider resources by hand. Details: `docs/operations.md`.
 
 **TTL:** each successful apply sets `ttl_expires_at = now + default_ttl`, so an
 actively-pushed branch keeps renewing and only expires `default_ttl` after the
@@ -466,20 +498,21 @@ Built-in providers: GitHub, GitLab, and Bitbucket (webhooks + PR comments);
 Compose over SSH and Kubernetes via kubectl; Cloudflare, Route 53, Google Cloud,
 and DigitalOcean DNS; ACME/Let's Encrypt via DNS-01. Adding another means
 implementing one of the five interfaces in `providers/providerapi` and wiring it
-into `ramifyd` startup; the shared contract suites in `test/contract` pin the
-behavior any implementation must satisfy, and a new provider should be added to
-its suite rather than only unit-tested.
+into `ramifyd` startup. `test/contract` has shared contract suites for the
+Deploy, DNS, and Git provider interfaces (`deploy.go`, `dns.go`, `git.go`) — a
+new implementation of one of those three should be added to its suite rather
+than only unit-tested. The Cert and Notify interfaces have no contract suite
+yet, so those are unit-tested only.
 
 Still deliberately out of scope: image building, per-hostname routing,
 idle-detection driving automatic sleep, *evicting* an environment to make room
 at the concurrency ceiling (Ramify rejects instead), out-of-process plugins,
-notifiers beyond PR comments, and any hosted component
-— see `DECISIONS.md`.
+notifiers beyond PR comments, and any hosted component.
 
 ## Development
 
 ```sh
-go build ./... && go vet ./... && golangci-lint run && go test -race -cover ./...
+go build ./... && go vet -tags=e2e ./... && golangci-lint run --build-tags=e2e && go test -race -cover ./...
 ```
 
 All four must pass before a PR. `CONTRIBUTING.md` has the commit style.
