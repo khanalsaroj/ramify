@@ -77,10 +77,11 @@ func (s *sqliteStore) CreateEnvironment(ctx context.Context, env Environment) (E
 
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO environments
-			(id, project, branch, pr_number, subdomain, artifact_ref, deploy_ref, status, pinned, ttl_expires_at, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			(id, project, branch, pr_number, subdomain, artifact_ref, deploy_ref, status,
+			 last_good_artifact_ref, last_good_deploy_ref, pinned, ttl_expires_at, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		env.ID, env.Project, env.Branch, nullableInt(env.PRNumber), env.Subdomain, env.ArtifactRef, env.DeployRef,
-		env.Status, env.Pinned, env.TTLExpiresAt, env.CreatedAt, env.UpdatedAt,
+		env.Status, env.LastGoodArtifactRef, env.LastGoodDeployRef, env.Pinned, env.TTLExpiresAt, env.CreatedAt, env.UpdatedAt,
 	)
 	if isUniqueConstraintErr(err) {
 		return Environment{}, fmt.Errorf("creating environment %s/%s: %w", env.Project, env.Branch, ErrConflict)
@@ -117,10 +118,12 @@ func (s *sqliteStore) UpdateEnvironment(ctx context.Context, env Environment) (E
 	res, err := tx.ExecContext(ctx, `
 		UPDATE environments SET
 			project = ?, branch = ?, pr_number = ?, subdomain = ?, artifact_ref = ?,
-			deploy_ref = ?, status = ?, pinned = ?, ttl_expires_at = ?, updated_at = ?
+			deploy_ref = ?, status = ?, last_good_artifact_ref = ?, last_good_deploy_ref = ?,
+			pinned = ?, ttl_expires_at = ?, updated_at = ?
 		WHERE id = ?`,
 		env.Project, env.Branch, nullableInt(env.PRNumber), env.Subdomain, env.ArtifactRef,
-		env.DeployRef, env.Status, env.Pinned, env.TTLExpiresAt, env.UpdatedAt, env.ID,
+		env.DeployRef, env.Status, env.LastGoodArtifactRef, env.LastGoodDeployRef,
+		env.Pinned, env.TTLExpiresAt, env.UpdatedAt, env.ID,
 	)
 	if isUniqueConstraintErr(err) {
 		return Environment{}, fmt.Errorf("updating environment %s: %w", env.ID, ErrConflict)
@@ -145,7 +148,8 @@ func scanEnvironment(row interface{ Scan(...any) error }) (Environment, error) {
 	var ttl sql.NullTime
 	err := row.Scan(
 		&env.ID, &env.Project, &env.Branch, &prNumber, &env.Subdomain, &env.ArtifactRef,
-		&env.DeployRef, &env.Status, &env.Pinned, &ttl, &env.CreatedAt, &env.UpdatedAt,
+		&env.DeployRef, &env.Status, &env.LastGoodArtifactRef, &env.LastGoodDeployRef,
+		&env.Pinned, &ttl, &env.CreatedAt, &env.UpdatedAt,
 	)
 	if err != nil {
 		return Environment{}, err
@@ -158,7 +162,7 @@ func scanEnvironment(row interface{ Scan(...any) error }) (Environment, error) {
 	return env, nil
 }
 
-const environmentColumns = `id, project, branch, pr_number, subdomain, artifact_ref, deploy_ref, status, pinned, ttl_expires_at, created_at, updated_at`
+const environmentColumns = `id, project, branch, pr_number, subdomain, artifact_ref, deploy_ref, status, last_good_artifact_ref, last_good_deploy_ref, pinned, ttl_expires_at, created_at, updated_at`
 
 // GetEnvironment implements Store.
 func (s *sqliteStore) GetEnvironment(ctx context.Context, id string) (Environment, error) {

@@ -28,6 +28,19 @@ import (
 	"github.com/khanalsaroj/ramify/providers/providerapi"
 )
 
+// webhookWorkerCount bounds Server's own webhook-processing pool — the
+// low-latency counterpart to cmd/ramifyd's 2s-poll durable event worker. A fixed
+// pool reading a bounded channel means a burst of webhooks can never spawn
+// unbounded goroutines/provider work: once the pool and its queue are full,
+// newly accepted webhooks simply wait for the poll-based worker to pick up their
+// already-durable event instead. The value mirrors defaultMaxEventWorkers.
+const webhookWorkerCount = 8
+
+// webhookQueueSize bounds how many durably-persisted-but-not-yet-dispatched
+// webhook events Server will hold for its own worker pool before falling back
+// silently to the poll-based worker.
+const webhookQueueSize = 256
+
 // Server is Ramify's local control plane HTTP API.
 type Server struct {
 	store        store.Store
@@ -38,6 +51,15 @@ type Server struct {
 	subdomainMax int
 	logger       *slog.Logger
 	metrics      *metrics.Metrics
+
+	// webhookQueue feeds Server's own bounded pool of webhook-processing
+	// workers (started in NewServer, run against context.Background() for the
+	// life of the process — see runWebhookWorker). It is deliberately not tied
+	// to Serve's ctx: a webhook accepted just before shutdown should still get
+	// to finish reconciling like it always could, and every test in this
+	// package constructs a Server directly via NewServer without ever calling
+	// Serve.
+	webhookQueue chan store.Event
 
 	router chi.Router
 }
@@ -71,9 +93,24 @@ func NewServer(
 		subdomainMax: 63,
 		logger:       logger,
 		metrics:      m,
+		webhookQueue: make(chan store.Event, webhookQueueSize),
 	}
 	s.router = s.routes()
+	for range webhookWorkerCount {
+		go s.runWebhookWorker()
+	}
 	return s
+}
+
+// runWebhookWorker is one of a fixed-size pool of goroutines dispatching
+// webhook-triggered durable events. See webhookQueue's doc comment for why it
+// runs against context.Background() rather than a ctx tied to Serve.
+func (s *Server) runWebhookWorker() {
+	for ev := range s.webhookQueue {
+		ctx, cancel := context.WithTimeout(context.Background(), webhookProcessTimeout)
+		s.reconciler.ProcessEvent(ctx, ev)
+		cancel()
+	}
 }
 
 // ServeHTTP implements http.Handler, primarily so tests can exercise Server without
@@ -109,11 +146,29 @@ func (s *Server) routes() chi.Router {
 			r.Delete("/", s.handleDeleteEnvironment)
 			r.Post("/sleep", s.handleSleepEnvironment)
 			r.Post("/wake", s.handleWakeEnvironment)
+			r.Post("/rollback", s.handleRollbackEnvironment)
 			r.Get("/logs", s.handleLogs)
 		})
 	})
 	return r
 }
+
+// readHeaderTimeout, readTimeout, and idleTimeout bound how long a connection may
+// sit reading request headers/body or idling between keep-alive requests, closing
+// off slow-loris-style connection exhaustion. There is deliberately no
+// WriteTimeout: net/http measures it from the end of the request headers to the
+// end of the response, so it would bound total handler execution time, not just
+// the write. handleCreateEnvironment/handleUpdateEnvironment call
+// core.Reconciler.Apply synchronously, which can legitimately run for minutes
+// (maxApplyAttempts retries, each waiting up to the configured readiness timeout),
+// and a blanket WriteTimeout would abort that mid-flight. A client that stops
+// reading its response is instead bounded by request-context cancellation, which
+// the reconciler already threads into every provider call.
+const (
+	readHeaderTimeout = 10 * time.Second
+	readTimeout       = 30 * time.Second
+	idleTimeout       = 120 * time.Second
+)
 
 // Serve listens on socketPath (created fresh on every start) and, if tcpAddr is
 // non-empty, also on tcpAddr with bearer-token authentication using tcpToken. If
@@ -123,12 +178,27 @@ func (s *Server) routes() chi.Router {
 // override, since Serve itself has no opinion on which addresses are "remote".
 // It blocks until ctx is canceled, then shuts down both listeners gracefully.
 func (s *Server) Serve(ctx context.Context, socketPath, tcpAddr, tcpToken string, tlsCertFile, tlsKeyFile string) error {
+	// Acquired before any socket work: defense in depth for the narrow race
+	// between probeStaleSocket's dial check and the actual bind/listen below,
+	// where two ramifyd processes racing to start against the same socketPath
+	// could otherwise both pass the probe before either is listening. See
+	// acquireProcessLock's doc comment for why this is only a real lock on Unix.
+	releaseLock, err := acquireProcessLock(socketPath + ".lock")
+	if err != nil {
+		return fmt.Errorf("api: %w", err)
+	}
+	defer func() {
+		if err := releaseLock(); err != nil {
+			s.logger.Error("releasing process lock", "error", err)
+		}
+	}()
+
 	unixListener, err := listenUnix(socketPath)
 	if err != nil {
 		return fmt.Errorf("api: %w", err)
 	}
 
-	unixServer := &http.Server{Handler: s, ReadHeaderTimeout: 10 * time.Second}
+	unixServer := &http.Server{Handler: s, ReadHeaderTimeout: readHeaderTimeout, ReadTimeout: readTimeout, IdleTimeout: idleTimeout}
 	var tcpServer *http.Server
 
 	var wg sync.WaitGroup
@@ -151,7 +221,7 @@ func (s *Server) Serve(ctx context.Context, socketPath, tcpAddr, tcpToken string
 			wg.Wait()
 			return fmt.Errorf("api: listening on %s: %w", tcpAddr, err)
 		}
-		tcpServer = &http.Server{Addr: tcpAddr, Handler: tokenAuth(tcpToken)(s), ReadHeaderTimeout: 10 * time.Second}
+		tcpServer = &http.Server{Addr: tcpAddr, Handler: tokenAuth(tcpToken)(s), ReadHeaderTimeout: readHeaderTimeout, ReadTimeout: readTimeout, IdleTimeout: idleTimeout}
 		wg.Go(func() {
 			var serveErr error
 			if tlsCertFile != "" && tlsKeyFile != "" {
@@ -184,11 +254,41 @@ func (s *Server) Serve(ctx context.Context, socketPath, tcpAddr, tcpToken string
 	return nil
 }
 
-// listenUnix removes any stale socket file at path before listening, so a prior
-// unclean shutdown doesn't block startup.
+// staleSocketDialTimeout bounds the connect attempt in probeStaleSocket. A
+// listening socket accepts near-instantly, so this only needs to be long enough
+// to not misjudge a socket as stale under load, not long enough to matter for
+// startup latency.
+const staleSocketDialTimeout = 2 * time.Second
+
+// probeStaleSocket reports whether a socket file at path is stale (safe to
+// remove and rebind) by attempting to connect to it. A successful connect means
+// some process is actively accepting on it — almost certainly another running
+// ramifyd — so the caller must not remove it. Any dial failure (connection
+// refused, no such file, etc.) means whatever is on disk is not being served,
+// which is exactly what "stale" means here.
+func probeStaleSocket(path string) error {
+	conn, err := net.DialTimeout("unix", path, staleSocketDialTimeout)
+	if err != nil {
+		return nil
+	}
+	_ = conn.Close()
+	return fmt.Errorf("refusing to remove live socket %s: another ramifyd instance appears to be running", path)
+}
+
+// listenUnix removes a stale socket file at path before listening — one left
+// behind by a prior unclean shutdown, verified via probeStaleSocket rather than
+// assumed, so a second daemon accidentally started against the same path
+// refuses to hijack the first one's live socket instead of disconnecting it.
 func listenUnix(path string) (net.Listener, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return nil, fmt.Errorf("creating socket directory: %w", err)
+	}
+	if _, err := os.Stat(path); err == nil {
+		if err := probeStaleSocket(path); err != nil {
+			return nil, err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("checking existing socket %s: %w", path, err)
 	}
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("removing stale socket %s: %w", path, err)

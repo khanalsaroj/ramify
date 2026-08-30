@@ -143,12 +143,13 @@ func run(configPath string, logger *slog.Logger) error {
 		"required_labels", admission.RequiredLabels,
 		"max_concurrent_envs", cfg.Filter.MaxConcurrentEnvs)
 
+	metricSet := &metrics.Metrics{}
 	reconciler := core.NewReconciler(st, deployProvider, dnsProvider, certProvider, notifyProvider,
 		core.NewRealClock(), cfg.BaseDomain, cfg.Reaper.DefaultTTL, logger,
 		core.WithAdmission(admission, cfg.Filter.MaxConcurrentEnvs),
 		core.WithReadiness(cfg.Deploy.ReadinessTimeout, cfg.Deploy.ReadinessPollInterval),
-		core.WithEventConcurrency(cfg.Reaper.EventConcurrency))
-	metricSet := &metrics.Metrics{}
+		core.WithEventConcurrency(cfg.Reaper.EventConcurrency),
+		core.WithMetrics(metricSet))
 	reaper := core.NewReaper(st, reconciler, core.NewRealClock(), logger, metricSet)
 	server := api.NewServer(st, reconciler, gitProvider, deployProvider, cfg.BaseDomain, logger, metricSet)
 
@@ -224,6 +225,11 @@ func runEventLoop(ctx context.Context, st store.Store, reconciler *core.Reconcil
 			return
 		case <-ticker.C:
 			now := time.Now().UTC()
+			// Recorded unconditionally, before any work that could itself fail:
+			// this proves the loop goroutine is alive and scheduling, which is
+			// exactly what distinguishes "alive but unable to reconcile" from
+			// genuinely healthy. See handleReadyz.
+			metricSet.WorkerHeartbeat.Store(now.UnixNano())
 			events, err := st.ListDueEvents(ctx, now, 100)
 			if err != nil {
 				logger.Error("event worker: listing due events failed", "error", err)

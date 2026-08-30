@@ -19,6 +19,13 @@ const (
 	StatusSleeping   = "sleeping"
 	StatusDestroying = "destroying"
 	StatusDestroyed  = "destroyed"
+	// StatusDegraded means an update failed but the environment was
+	// automatically rolled back to LastGoodArtifactRef/LastGoodDeployRef and is
+	// still serving that revision — distinct from StatusFailed, which means
+	// nothing is known to be serving. ArtifactRef keeps the originally-
+	// requested (failed) revision so it stays visible as "desired", while
+	// LastGood* names what's actually live.
+	StatusDegraded = "degraded"
 )
 
 // EventKindWebhookReceived is a durable inbox event created before a webhook
@@ -34,18 +41,26 @@ var ErrConflict = errors.New("store: conflict")
 
 // Environment is a preview environment record.
 type Environment struct {
-	ID           string
-	Project      string
-	Branch       string
-	PRNumber     int // 0 means no associated pull request
-	Subdomain    string
-	ArtifactRef  string
-	DeployRef    string
-	Status       string
-	Pinned       bool
-	TTLExpiresAt *time.Time
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	ID          string
+	Project     string
+	Branch      string
+	PRNumber    int // 0 means no associated pull request
+	Subdomain   string
+	ArtifactRef string
+	DeployRef   string
+	Status      string
+	// LastGoodArtifactRef and LastGoodDeployRef record the most recently
+	// successful deployment, updated every time Apply succeeds. Empty means no
+	// deployment has ever succeeded for this environment yet. They let a failed
+	// redeploy roll back to a known-good revision (see StatusDegraded) instead
+	// of only ever being marked failed, and stay untouched by a failed attempt
+	// so they always describe what's actually known to be serving.
+	LastGoodArtifactRef string
+	LastGoodDeployRef   string
+	Pinned              bool
+	TTLExpiresAt        *time.Time
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
 }
 
 // DNSRecord is a DNS record created for an environment.

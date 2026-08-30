@@ -143,7 +143,7 @@ func TestReplayRetiresUnparseablePayload(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	h.rec.replayOne(ctx, ev)
+	h.rec.ProcessEvent(ctx, ev)
 
 	due, err := h.store.ListDueEvents(ctx, h.clock.now.Add(time.Hour), 10)
 	require.NoError(t, err)
@@ -162,7 +162,7 @@ func TestReplayRetiresUnknownEventKind(t *testing.T) {
 	ev, err := h.store.CreateEvent(ctx, store.Event{Kind: "not_a_real_kind", Payload: "{}"})
 	require.NoError(t, err)
 
-	h.rec.replayOne(ctx, ev)
+	h.rec.ProcessEvent(ctx, ev)
 
 	dead, err := h.store.ListDeadLetteredEvents(ctx, 10)
 	require.NoError(t, err)

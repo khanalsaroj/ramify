@@ -326,8 +326,9 @@ follow it automatically, so a large fleet never needs manual pagination.
 ## Health, readiness, and metrics
 
 `ramifyd` serves `/healthz` (state store is readable), `/readyz` (event store is
-available for reconciliation), and `/metrics` (Prometheus text format — webhook
-deliveries, duplicates, retries, reconciliation failures, cleanup failures,
+available, the durable event worker's poll loop is heartbeating within 30s, and
+the inbox backlog is under threshold), and `/metrics` (Prometheus text format —
+webhook deliveries, duplicates, retries, reconciliation failures, cleanup failures,
 pending inbox work, dead-lettered events). Put these behind the same
 socket/authenticated-TCP boundary as the control API. Details: `docs/operations.md`.
 

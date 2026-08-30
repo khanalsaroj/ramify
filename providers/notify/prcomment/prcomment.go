@@ -23,6 +23,7 @@ var defaultTemplates = map[string]string{
 	"ready":     "Preview environment ready: {{.URL}}",
 	"updated":   "Preview environment updated: {{.URL}}",
 	"failed":    "Preview environment failed to deploy.\n\n{{.Detail}}",
+	"degraded":  "Preview environment update failed and was rolled back to the last known-good revision; it is still serving, but not the requested change.\n\n{{.Detail}}",
 	"expiring":  "This preview environment will expire soon.",
 	"destroyed": "Preview environment destroyed.",
 }

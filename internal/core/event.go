@@ -16,6 +16,8 @@ import (
 const (
 	EventKindApplyRequested   = "apply_requested"
 	EventKindDestroyRequested = "destroy_requested"
+	EventKindSleepRequested   = "sleep_requested"
+	EventKindWakeRequested    = "wake_requested"
 	EventKindWebhookReceived  = store.EventKindWebhookReceived
 )
 
@@ -52,9 +54,13 @@ type applyRequestedPayload struct {
 	ArtifactRef string `json:"artifact_ref"`
 }
 
-// destroyRequestedPayload is the JSON shape stored in events.payload for an
-// EventKindDestroyRequested event.
-type destroyRequestedPayload struct {
+// projectBranchPayload is the JSON shape stored in events.payload for events
+// that only need to name their target, not describe a change: destroy, sleep,
+// and wake all resolve their target environment from the event row's
+// EnvironmentID at replay time, so this payload exists purely for operator
+// visibility (e.g. reading events.payload while debugging), not because replay
+// consumes it.
+type projectBranchPayload struct {
 	Project string `json:"project"`
 	Branch  string `json:"branch"`
 }
@@ -74,9 +80,25 @@ func marshalApplyPayload(req ApplyRequest) (string, error) {
 }
 
 func marshalDestroyPayload(project, branch string) (string, error) {
-	b, err := json.Marshal(destroyRequestedPayload{Project: project, Branch: branch})
+	b, err := json.Marshal(projectBranchPayload{Project: project, Branch: branch})
 	if err != nil {
 		return "", fmt.Errorf("marshaling destroy event payload: %w", err)
+	}
+	return string(b), nil
+}
+
+func marshalSleepPayload(project, branch string) (string, error) {
+	b, err := json.Marshal(projectBranchPayload{Project: project, Branch: branch})
+	if err != nil {
+		return "", fmt.Errorf("marshaling sleep event payload: %w", err)
+	}
+	return string(b), nil
+}
+
+func marshalWakePayload(project, branch string) (string, error) {
+	b, err := json.Marshal(projectBranchPayload{Project: project, Branch: branch})
+	if err != nil {
+		return "", fmt.Errorf("marshaling wake event payload: %w", err)
 	}
 	return string(b), nil
 }

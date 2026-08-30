@@ -598,14 +598,19 @@ var TOKEN_KEY          = "ramify.token";
 var THEME_KEY          = "ramify.theme";
 
 /* Status vocabulary, mirroring internal/store: pending, deploying, ready,
- * failed, sleeping, destroying, destroyed. Anything unrecognised falls back to
- * the idle tone rather than being dropped, so a future status still renders. */
+ * failed, degraded, sleeping, destroying, destroyed. Anything unrecognised
+ * falls back to the idle tone rather than being dropped, so a future status
+ * still renders. Degraded reuses the amber "busy" tone (without the pulse) so
+ * it reads as "needs attention" without being mistaken for the red failed
+ * state: a degraded environment is still serving its last known-good
+ * revision, just not the one that was requested. */
 var STATUS = {
   ready:      { label: "Ready",      tone: "ok",   pulse: false },
   deploying:  { label: "Deploying",  tone: "busy", pulse: true  },
   pending:    { label: "Pending",    tone: "busy", pulse: true  },
   destroying: { label: "Destroying", tone: "busy", pulse: true  },
   failed:     { label: "Failed",     tone: "bad",  pulse: false },
+  degraded:   { label: "Degraded",   tone: "busy", pulse: false },
   sleeping:   { label: "Sleeping",   tone: "rest", pulse: false },
   destroyed:  { label: "Destroyed",  tone: "idle", pulse: false }
 };
@@ -615,6 +620,7 @@ var CHIPS = [
   { id: "ready",     label: "Ready"       },
   { id: "deploying", label: "In progress" },
   { id: "sleeping",  label: "Sleeping"    },
+  { id: "degraded",  label: "Degraded"    },
   { id: "failed",    label: "Failed"      }
 ];
 
@@ -1161,6 +1167,9 @@ function renderActions(container, env) {
   if (status === "sleeping") {
     container.appendChild(actionButton("Wake", "i-power", "btn", function () { runAction(env, "wake"); }));
   }
+  if (status === "degraded" && env.LastGoodArtifactRef) {
+    container.appendChild(actionButton("Rollback", "i-refresh", "btn", function () { runAction(env, "rollback"); }));
+  }
   if (status !== "destroyed" && status !== "destroying") {
     container.appendChild(actionButton("Destroy", "i-trash", "btn btn-danger", function () { runAction(env, "destroy"); }));
   }
@@ -1281,10 +1290,11 @@ function scheduleLogs() {
 /* --------------------------------------------------------------- actions -- */
 
 var ACTIONS = {
-  sleep:   { verb: "Sleep",   past: "Sleep requested",   method: "POST",   path: "/sleep", destructive: false },
-  wake:    { verb: "Wake",    past: "Wake requested",    method: "POST",   path: "/wake",  destructive: false },
+  sleep:    { verb: "Sleep",    past: "Sleep requested",    method: "POST",   path: "/sleep",    destructive: false },
+  wake:     { verb: "Wake",     past: "Wake requested",     method: "POST",   path: "/wake",     destructive: false },
+  rollback: { verb: "Rollback", past: "Rollback requested", method: "POST",   path: "/rollback", destructive: false },
   // Destroy is DELETE on the environment itself; there is no /destroy route.
-  destroy: { verb: "Destroy", past: "Destroy requested", method: "DELETE", path: "",       destructive: true  }
+  destroy:  { verb: "Destroy",  past: "Destroy requested",  method: "DELETE", path: "",          destructive: true  }
 };
 
 function runAction(env, kind) {

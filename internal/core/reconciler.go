@@ -15,6 +15,7 @@ import (
 
 	"github.com/khanalsaroj/ramify/internal/core/domain"
 	"github.com/khanalsaroj/ramify/internal/core/policy"
+	"github.com/khanalsaroj/ramify/internal/metrics"
 	"github.com/khanalsaroj/ramify/internal/store"
 	"github.com/khanalsaroj/ramify/providers/providerapi"
 )
@@ -96,6 +97,12 @@ type Reconciler struct {
 	// concurrently. Set via WithEventConcurrency; defaulted in NewReconciler
 	// otherwise.
 	maxEventWorkers int
+
+	// metrics records reconciliation attempts/failures from ProcessEvent,
+	// regardless of which caller (the poll-driven ReplayEvents or Server's
+	// webhook worker pool) dispatched the event. Set via WithMetrics; defaults
+	// to an unshared, unreported *metrics.Metrics so it is never nil.
+	metrics *metrics.Metrics
 }
 
 // NewReconciler constructs a Reconciler. All dependencies are passed in explicitly;
@@ -130,6 +137,7 @@ func NewReconciler(
 		readinessTimeout:      defaultReadinessTimeout,
 		readinessPollInterval: defaultReadinessPollInterval,
 		maxEventWorkers:       defaultMaxEventWorkers,
+		metrics:               &metrics.Metrics{},
 	}
 	for _, opt := range opts {
 		opt(r)
@@ -172,6 +180,17 @@ func WithEventConcurrency(maxWorkers int) Option {
 	return func(r *Reconciler) {
 		if maxWorkers > 0 {
 			r.maxEventWorkers = maxWorkers
+		}
+	}
+}
+
+// WithMetrics sets the metrics sink ProcessEvent reports reconciliation
+// attempts/failures to. A nil m is ignored, keeping the built-in unshared
+// default.
+func WithMetrics(m *metrics.Metrics) Option {
+	return func(r *Reconciler) {
+		if m != nil {
+			r.metrics = m
 		}
 	}
 }
@@ -356,7 +375,7 @@ func (r *Reconciler) upsertPendingEnvironment(ctx context.Context, req ApplyRequ
 // with capped exponential backoff up to maxApplyAttempts before marking the
 // environment failed and notifying.
 func (r *Reconciler) doApply(ctx context.Context, env store.Environment, req ApplyRequest) (store.Environment, error) {
-	isUpdate := env.Status == store.StatusReady || env.DeployRef != ""
+	isUpdate := env.Status == store.StatusReady || env.Status == store.StatusDegraded || env.DeployRef != ""
 
 	env.PRNumber = req.PRNumber
 	env.Subdomain = req.Subdomain
@@ -387,6 +406,38 @@ func (r *Reconciler) doApply(ctx context.Context, env store.Environment, req App
 			}
 			return env, nil
 		}
+	}
+
+	// The requested revision never came up. If a different revision previously
+	// did, attempt one compensating redeploy of it so the environment keeps
+	// serving something instead of being abandoned. This costs no extra retry
+	// budget — attemptApply's failing branches all return the input env
+	// unmodified, so env.DeployRef here still points at whatever was last
+	// successfully running.
+	if env.LastGoodArtifactRef != "" && env.LastGoodArtifactRef != req.ArtifactRef {
+		rollbackReq := req
+		rollbackReq.ArtifactRef = env.LastGoodArtifactRef
+		rolledBack, rollbackErr := r.attemptApply(ctx, env, rollbackReq, fqdn, tag)
+		if rollbackErr == nil {
+			rolledBack.Status = store.StatusDegraded
+			rolledBack.ArtifactRef = req.ArtifactRef // desired stays the revision that failed
+			rolledBack, updateErr := r.store.UpdateEnvironment(ctx, rolledBack)
+			if updateErr != nil {
+				r.logger.ErrorContext(ctx, "reconciler: marking environment degraded", "error", updateErr)
+			}
+			detail := fmt.Sprintf("update to %s failed after %d attempts, rolled back to last known-good %s: %s",
+				req.ArtifactRef, maxApplyAttempts, env.LastGoodArtifactRef, lastErr)
+			if err := r.notify.Notify(ctx, req.Project, req.PRNumber, providerapi.NotifyEvent{Kind: "degraded", Detail: detail}); err != nil {
+				r.logger.ErrorContext(ctx, "reconciler: notify failed", "error", err)
+			}
+			// Still an error: the durable apply event stays pending and keeps
+			// retrying the actually-requested revision in the background (bounded
+			// by the usual dead-letter attempt budget), while the environment
+			// itself truthfully reports degraded-but-serving in the meantime.
+			return rolledBack, fmt.Errorf("apply failed after %d attempts, rolled back to last known-good revision %s: %w",
+				maxApplyAttempts, env.LastGoodArtifactRef, lastErr)
+		}
+		lastErr = fmt.Errorf("update failed: %w; rollback to last known-good revision %s also failed: %v", lastErr, env.LastGoodArtifactRef, rollbackErr)
 	}
 
 	env.Status = store.StatusFailed
@@ -438,6 +489,8 @@ func (r *Reconciler) attemptApply(ctx context.Context, env store.Environment, re
 
 	env.DeployRef = deployment.Ref
 	env.Status = store.StatusReady
+	env.LastGoodArtifactRef = req.ArtifactRef
+	env.LastGoodDeployRef = deployment.Ref
 	if r.defaultTTL > 0 {
 		expiresAt := r.clock.Now().Add(r.defaultTTL)
 		env.TTLExpiresAt = &expiresAt
@@ -562,37 +615,55 @@ func (r *Reconciler) destroyWithoutEvent(ctx context.Context, env store.Environm
 	return r.doDestroy(ctx, env)
 }
 
+// doDestroy runs every compensating teardown action — DNS records, certificate
+// revocation, deployed certificate removal, and the deployment itself —
+// regardless of whether an earlier step in the same pass failed, and only marks
+// the environment destroyed once all of them have succeeded. This matters
+// because the steps are independent infrastructure with independent failure
+// modes (an ACME revoke failing must not leave the deployment and its deployed
+// key material running): stopping at the first error would abandon everything
+// after it. Retrying a partial failure by calling doDestroy again is safe and
+// cheap without any new bookkeeping, because every step is already idempotent:
+// DeleteRecord tolerates providerapi.ErrRecordAlreadyAbsent and a succeeded
+// record's row is removed from the store so it isn't retried; RevokeCertificate
+// is documented as a no-op when nothing is cached; Destroy is a no-op on an
+// unknown/already-destroyed ref.
 func (r *Reconciler) doDestroy(ctx context.Context, env store.Environment) error {
+	var errs []error
+
 	records, err := r.store.ListDNSRecords(ctx, env.ID)
 	if err != nil {
-		return fmt.Errorf("listing dns records: %w", err)
+		errs = append(errs, fmt.Errorf("listing dns records: %w", err))
 	}
 	for _, rec := range records {
 		if err := r.dns.DeleteRecord(ctx, providerapi.DNSRecord{
 			Zone: r.baseDomain, Name: rec.Name, Type: rec.RecordType, Value: rec.Value, OwnershipTag: rec.OwnershipTag,
-		}); err != nil {
-			if !errors.Is(err, providerapi.ErrRecordAlreadyAbsent) {
-				return fmt.Errorf("deleting dns record %s: %w", rec.Name, err)
-			}
+		}); err != nil && !errors.Is(err, providerapi.ErrRecordAlreadyAbsent) {
+			errs = append(errs, fmt.Errorf("deleting dns record %s: %w", rec.Name, err))
+			continue // still present at the provider; leave the row for the next attempt
 		}
 		if err := r.store.DeleteDNSRecord(ctx, rec.ID); err != nil {
-			return fmt.Errorf("removing dns record row %s: %w", rec.ID, err)
+			errs = append(errs, fmt.Errorf("removing dns record row %s: %w", rec.ID, err))
 		}
 	}
 
 	if err := r.cert.RevokeCertificate(ctx, r.fqdn(env.Subdomain)); err != nil {
-		return fmt.Errorf("revoking certificate: %w", err)
+		errs = append(errs, fmt.Errorf("revoking certificate: %w", err))
 	}
 	if remover, ok := r.deploy.(providerapi.CertificateRemover); ok {
 		if err := remover.RemoveCertificate(ctx, r.fqdn(env.Subdomain)); err != nil {
-			return fmt.Errorf("removing deployed certificate: %w", err)
+			errs = append(errs, fmt.Errorf("removing deployed certificate: %w", err))
 		}
 	}
 
 	if env.DeployRef != "" {
 		if err := r.deploy.Destroy(ctx, env.DeployRef); err != nil {
-			return fmt.Errorf("destroying deployment: %w", err)
+			errs = append(errs, fmt.Errorf("destroying deployment: %w", err))
 		}
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("doDestroy: %w", errors.Join(errs...))
 	}
 
 	env.Status = store.StatusDestroyed
@@ -604,6 +675,116 @@ func (r *Reconciler) doDestroy(ctx context.Context, env store.Environment) error
 		r.logger.ErrorContext(ctx, "reconciler: notify failed", "error", err)
 	}
 	return nil
+}
+
+// Sleep stops env's deployment without destroying it. It is durable and
+// serialized the same way Apply/Destroy are: a durable event is persisted before
+// the provider call, so a crash mid-sleep is recovered by replay, and the
+// project/branch lock prevents it from racing a concurrent webhook-triggered
+// Apply/Destroy on the same environment. Only a StatusReady environment may
+// sleep; anything else returns ErrInvalidEnvironmentAction without touching the
+// deploy provider.
+func (r *Reconciler) Sleep(ctx context.Context, env store.Environment) (store.Environment, error) {
+	unlock := r.lock(env.Project, env.Branch)
+	defer unlock()
+
+	if env.Status != store.StatusReady {
+		return store.Environment{}, fmt.Errorf("%w: cannot sleep environment in status %q", ErrInvalidEnvironmentAction, env.Status)
+	}
+
+	payload, err := marshalSleepPayload(env.Project, env.Branch)
+	if err != nil {
+		return store.Environment{}, fmt.Errorf("reconciler: sleep %s: %w", env.ID, err)
+	}
+	ev, err := r.store.CreateEvent(ctx, store.Event{EnvironmentID: env.ID, Kind: EventKindSleepRequested, Payload: payload})
+	if err != nil {
+		return store.Environment{}, fmt.Errorf("reconciler: sleep %s: %w", env.ID, err)
+	}
+
+	result, sleepErr := r.doSleep(ctx, env)
+	if sleepErr == nil {
+		r.markProcessed(ctx, ev)
+		return result, nil
+	}
+	r.scheduleRetry(ctx, ev, sleepErr)
+	r.logger.WarnContext(ctx, "reconciler: sleep event remains pending for retry", "event_id", ev.ID, "error", sleepErr)
+	return store.Environment{}, fmt.Errorf("reconciler: sleep %s: %w", env.ID, sleepErr)
+}
+
+// doSleep re-checks env.Status even though Sleep already checked it, because
+// doSleep also runs from replayOne against a freshly reloaded environment: the
+// status could have changed (e.g. a concurrent webhook destroyed it) between
+// when the durable event was created and when replay picks it up. A status
+// mismatch found here can never resolve by retrying, so it is terminal.
+func (r *Reconciler) doSleep(ctx context.Context, env store.Environment) (store.Environment, error) {
+	if env.Status != store.StatusReady {
+		return store.Environment{}, Terminal(fmt.Errorf("%w: cannot sleep environment in status %q", ErrInvalidEnvironmentAction, env.Status))
+	}
+	if env.DeployRef == "" {
+		return store.Environment{}, Terminal(fmt.Errorf("environment %s has no deployment to sleep", env.ID))
+	}
+	if err := r.deploy.Sleep(ctx, env.DeployRef); err != nil {
+		return store.Environment{}, fmt.Errorf("deploy sleep: %w", err)
+	}
+	env.Status = store.StatusSleeping
+	env, err := r.store.UpdateEnvironment(ctx, env)
+	if err != nil {
+		return store.Environment{}, fmt.Errorf("marking environment sleeping: %w", err)
+	}
+	return env, nil
+}
+
+// Wake restarts env's deployment. See Sleep's doc comment for the durability and
+// locking rationale, which is identical. Only a StatusSleeping environment may
+// wake; in particular a failed or destroyed environment carrying a stale
+// DeployRef is rejected here before any provider call, rather than trusting
+// DeployRef alone.
+func (r *Reconciler) Wake(ctx context.Context, env store.Environment) (store.Environment, error) {
+	unlock := r.lock(env.Project, env.Branch)
+	defer unlock()
+
+	if env.Status != store.StatusSleeping {
+		return store.Environment{}, fmt.Errorf("%w: cannot wake environment in status %q", ErrInvalidEnvironmentAction, env.Status)
+	}
+
+	payload, err := marshalWakePayload(env.Project, env.Branch)
+	if err != nil {
+		return store.Environment{}, fmt.Errorf("reconciler: wake %s: %w", env.ID, err)
+	}
+	ev, err := r.store.CreateEvent(ctx, store.Event{EnvironmentID: env.ID, Kind: EventKindWakeRequested, Payload: payload})
+	if err != nil {
+		return store.Environment{}, fmt.Errorf("reconciler: wake %s: %w", env.ID, err)
+	}
+
+	result, wakeErr := r.doWake(ctx, env)
+	if wakeErr == nil {
+		r.markProcessed(ctx, ev)
+		return result, nil
+	}
+	r.scheduleRetry(ctx, ev, wakeErr)
+	r.logger.WarnContext(ctx, "reconciler: wake event remains pending for retry", "event_id", ev.ID, "error", wakeErr)
+	return store.Environment{}, fmt.Errorf("reconciler: wake %s: %w", env.ID, wakeErr)
+}
+
+// doWake re-checks env.Status for the same reason doSleep does: it also runs
+// from replayOne against a freshly reloaded environment whose status may have
+// moved on since the durable event was created.
+func (r *Reconciler) doWake(ctx context.Context, env store.Environment) (store.Environment, error) {
+	if env.Status != store.StatusSleeping {
+		return store.Environment{}, Terminal(fmt.Errorf("%w: cannot wake environment in status %q", ErrInvalidEnvironmentAction, env.Status))
+	}
+	if env.DeployRef == "" {
+		return store.Environment{}, Terminal(fmt.Errorf("environment %s has no deployment to wake", env.ID))
+	}
+	if err := r.deploy.Wake(ctx, env.DeployRef); err != nil {
+		return store.Environment{}, fmt.Errorf("deploy wake: %w", err)
+	}
+	env.Status = store.StatusReady
+	env, err := r.store.UpdateEnvironment(ctx, env)
+	if err != nil {
+		return store.Environment{}, fmt.Errorf("marking environment ready: %w", err)
+	}
+	return env, nil
 }
 
 // ReplayUnprocessedEvents re-drives every event with a NULL processed_at, oldest
@@ -632,14 +813,20 @@ func (r *Reconciler) ReplayEvents(ctx context.Context, events []store.Event) err
 		go func(ev store.Event) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			r.replayOne(ctx, ev)
+			r.ProcessEvent(ctx, ev)
 		}(ev)
 	}
 	wg.Wait()
 	return nil
 }
 
-func (r *Reconciler) replayOne(ctx context.Context, ev store.Event) {
+// ProcessEvent claims and dispatches a single durable event by kind, then marks
+// it processed or schedules a retry/dead-letter based on the outcome. It is the
+// shared claim/dispatch/retry logic behind both ReplayEvents (the poll-driven
+// path in cmd/ramifyd) and Server's webhook worker pool (the low-latency path):
+// both race to claim the same events via the store's CAS-based ClaimEvent, so
+// having two callers is safe — at most one of them ever wins a given event.
+func (r *Reconciler) ProcessEvent(ctx context.Context, ev store.Event) {
 	claimed, err := r.store.ClaimEvent(ctx, ev.ID, r.clock.Now(), r.clock.Now().Add(10*time.Minute))
 	if err != nil {
 		r.logger.ErrorContext(ctx, "reconciler: claiming event failed", "error", err, "event_id", ev.ID)
@@ -674,6 +861,22 @@ func (r *Reconciler) replayOne(ctx context.Context, ev store.Event) {
 		}
 		unlock := r.lock(env.Project, env.Branch)
 		replayErr = func() error { defer unlock(); return r.doDestroy(ctx, env) }()
+	case EventKindSleepRequested:
+		env, err := r.store.GetEnvironment(ctx, ev.EnvironmentID)
+		if err != nil {
+			replayErr = r.classifyLookup(err, "replay: sleep: loading environment")
+			break
+		}
+		unlock := r.lock(env.Project, env.Branch)
+		replayErr = func() error { defer unlock(); _, err := r.doSleep(ctx, env); return err }()
+	case EventKindWakeRequested:
+		env, err := r.store.GetEnvironment(ctx, ev.EnvironmentID)
+		if err != nil {
+			replayErr = r.classifyLookup(err, "replay: wake: loading environment")
+			break
+		}
+		unlock := r.lock(env.Project, env.Branch)
+		replayErr = func() error { defer unlock(); _, err := r.doWake(ctx, env); return err }()
 	case EventKindWebhookReceived:
 		webhookEvent, err := UnmarshalWebhookPayload(ev.Payload)
 		if err != nil {
@@ -688,10 +891,12 @@ func (r *Reconciler) replayOne(ctx context.Context, ev store.Event) {
 	}
 
 	if replayErr != nil {
+		r.metrics.ReconciliationFailures.Add(1)
 		r.scheduleRetry(ctx, ev, replayErr)
 		r.logger.ErrorContext(ctx, "reconciler: replay failed; event remains pending", "error", replayErr, "event_id", ev.ID)
 		return
 	}
+	r.metrics.Reconciliations.Add(1)
 	r.markProcessed(ctx, ev)
 }
 

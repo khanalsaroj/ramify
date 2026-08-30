@@ -22,13 +22,21 @@ var ErrInvalidTransition = errors.New("store: invalid status transition")
 // a branch legitimately redeploys an environment that is ready, failed, sleeping,
 // or already torn down.
 var allowedTransitions = map[string][]string{
-	StatusPending:    {StatusDeploying, StatusDestroying, StatusFailed},
-	StatusDeploying:  {StatusReady, StatusFailed, StatusDestroying},
-	StatusReady:      {StatusDeploying, StatusSleeping, StatusDestroying, StatusFailed},
+	StatusPending:   {StatusDeploying, StatusDestroying, StatusFailed},
+	StatusDeploying: {StatusReady, StatusDegraded, StatusFailed, StatusDestroying},
+	// StatusDegraded is reachable from StatusReady too: a compensating rollback
+	// redeploy goes through attemptApply's normal success path (which writes
+	// Ready) before the reconciler immediately re-marks it Degraded to reflect
+	// that the *requested* revision, not the one now running, is what failed.
+	StatusReady:      {StatusDeploying, StatusSleeping, StatusDestroying, StatusFailed, StatusDegraded},
 	StatusFailed:     {StatusDeploying, StatusDestroying},
 	StatusSleeping:   {StatusDeploying, StatusReady, StatusDestroying},
 	StatusDestroying: {StatusDestroyed, StatusFailed},
 	StatusDestroyed:  {StatusDeploying, StatusDestroying},
+	// A degraded environment is still live (something is serving, just not the
+	// requested revision): the only ways out are trying another deploy or
+	// tearing it down, exactly like StatusFailed.
+	StatusDegraded: {StatusDeploying, StatusDestroying},
 }
 
 // CanTransition reports whether an environment may move from status to next.

@@ -65,6 +65,15 @@ func TestLoadMissingRequiredFields(t *testing.T) {
 	require.Contains(t, err.Error(), "store.path")
 }
 
+func TestLoadRejectsUnknownField(t *testing.T) {
+	t.Setenv("TEST_WEBHOOK_SECRET", "shh-its-a-secret")
+	path := writeTempConfig(t, validYAML+"filter:\n  pr_onl: true\n")
+
+	_, err := Load(path)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "pr_onl")
+}
+
 func TestLoadFileNotFound(t *testing.T) {
 	_, err := Load(filepath.Join(t.TempDir(), "does-not-exist.yaml"))
 	require.Error(t, err)

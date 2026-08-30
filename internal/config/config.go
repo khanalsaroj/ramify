@@ -5,6 +5,7 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
 	"log/slog"
 	"net"
@@ -160,9 +161,10 @@ type FilterConfig struct {
 }
 
 // NotifyConfig configures providers/notify/prcomment. CommentTemplates maps a
-// providerapi.NotifyEvent.Kind ("ready", "updated", "failed", "expiring",
-// "destroyed") to a Go text/template string executed against that NotifyEvent. Any
-// kind not present here falls back to a built-in default template.
+// providerapi.NotifyEvent.Kind ("ready", "updated", "failed", "degraded",
+// "expiring", "destroyed") to a Go text/template string executed against that
+// NotifyEvent. Any kind not present here falls back to a built-in default
+// template.
 type NotifyConfig struct {
 	CommentTemplates map[string]string `yaml:"comment_templates"`
 }
@@ -201,8 +203,12 @@ func Load(path string) (*Config, error) {
 	}
 
 	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("config: parsing %s: %w", path, err)
+	if len(bytes.TrimSpace(data)) > 0 {
+		dec := yaml.NewDecoder(bytes.NewReader(data))
+		dec.KnownFields(true) // a misspelled key (e.g. a security/filter setting) must fail loudly, not silently fall back to its default
+		if err := dec.Decode(&cfg); err != nil {
+			return nil, fmt.Errorf("config: parsing %s: %w", path, err)
+		}
 	}
 
 	if cfg.Git.Provider == "" {

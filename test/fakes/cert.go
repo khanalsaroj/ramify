@@ -17,6 +17,11 @@ type CertificateProvider struct {
 
 	// Now, if set, is used instead of time.Now for computing ExpiresAt.
 	Now func() time.Time
+
+	// RevokeErr, when set, is returned by every RevokeCertificate call instead
+	// of succeeding, so tests can exercise compensating-cleanup ordering when
+	// one teardown step fails.
+	RevokeErr error
 }
 
 var _ providerapi.CertificateProvider = (*CertificateProvider)(nil)
@@ -52,6 +57,9 @@ func (f *CertificateProvider) EnsureCertificate(_ context.Context, domain string
 func (f *CertificateProvider) RevokeCertificate(_ context.Context, domain string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.RevokeErr != nil {
+		return f.RevokeErr
+	}
 	delete(f.certs, domain)
 	return nil
 }
